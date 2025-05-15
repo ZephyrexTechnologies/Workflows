@@ -1,0 +1,70 @@
+name: Reusable - Deploy Storybook to GitHub Pages
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "18.x"
+      install_command:
+        description: "Command to install dependencies (e.g., npm ci, yarn install)"
+        required: false
+        type: string
+        default: "npm ci"
+      build_command:
+        description: "Command to build Storybook (e.g., npm run build-storybook)"
+        required: false
+        type: string
+        default: "npm run build-storybook" # Common default
+      storybook_directory:
+        description: "Directory where Storybook build output is located"
+        required: false
+        type: string
+        default: "storybook-static" # Common default
+      working-directory:
+        description: "Directory where the package.json and storybook config are located"
+        required: false
+        type: string
+        default: "."
+
+permissions:
+  contents: read # To checkout the repository
+  pages: write # To deploy to GitHub Pages
+  id-token: write # To authenticate with GitHub Pages
+
+jobs:
+  build-and-deploy-storybook:
+    name: Build and Deploy Storybook
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Build Storybook
+        run: ${{ inputs.build_command }}
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Storybook artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ inputs.working-directory }}/${{ inputs.storybook_directory }}
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

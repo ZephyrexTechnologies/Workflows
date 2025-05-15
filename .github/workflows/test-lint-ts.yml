@@ -1,0 +1,120 @@
+name: Reusable TypeScript Lint (ESLint + Prettier)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "18.x"
+      install_command:
+        description: "Command to install dependencies (e.g., npm ci, yarn install)"
+        required: false
+        type: string
+        default: "npm ci"
+      eslint_check_command:
+        description: "Command to check with ESLint"
+        required: false
+        type: string
+        default: "npm run lint:eslint:check" # Placeholder, user should configure
+      eslint_fix_command:
+        description: "Command to fix with ESLint"
+        required: false
+        type: string
+        default: "npm run lint:eslint:fix" # Placeholder, user should configure
+      prettier_check_command:
+        description: "Command to check with Prettier"
+        required: false
+        type: string
+        default: "npm run lint:prettier:check" # Placeholder, user should configure
+      prettier_fix_command:
+        description: "Command to fix with Prettier"
+        required: false
+        type: string
+        default: "npm run lint:prettier:fix" # Placeholder, user should configure
+      working-directory:
+        description: "Directory where package.json and lint configurations are located"
+        required: false
+        type: string
+        default: "."
+    outputs:
+      auto_formatted:
+        description: "Whether ESLint/Prettier auto-formatted files and pushed changes."
+        value: ${{ jobs.lint.outputs.auto_formatted }}
+
+jobs:
+  lint:
+    name: TypeScript ESLint/Prettier Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    outputs:
+      auto_formatted: ${{ steps.push-changes.outputs.pushed || 'false' }}
+    permissions:
+      contents: write # To push formatting changes
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ github.token }} # Use default GITHUB_TOKEN for pushing to the PR branch
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Check with ESLint
+        id: eslint-check
+        continue-on-error: true
+        run: ${{ inputs.eslint_check_command }}
+
+      - name: Check with Prettier
+        id: prettier-check
+        continue-on-error: true
+        run: ${{ inputs.prettier_check_command }}
+
+      - name: Auto-format with ESLint and Prettier
+        id: format
+        if: steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure'
+        run: |
+          echo "Attempting to auto-fix with ESLint..."
+          ${{ inputs.eslint_fix_command }}
+          echo "Attempting to auto-format with Prettier..."
+          ${{ inputs.prettier_fix_command }}
+
+      - name: Configure Git
+        if: steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push changes
+        id: push-changes
+        if: steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure'
+        run: |
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit after auto-formatting attempts."
+            echo "pushed=false" >> $GITHUB_OUTPUT
+          else
+            git commit -m "style: auto-format TypeScript code with ESLint/Prettier"
+            # Determine the current branch
+            BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
+            echo "Pushing changes to branch: $BRANCH_NAME"
+            git push origin HEAD:$BRANCH_NAME
+            echo "pushed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fail workflow if formatting was needed and pushed
+        if: (steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure') && steps.push-changes.outputs.pushed == 'true'
+        run: |
+          echo "Code was auto-formatted by ESLint/Prettier. A new commit has been pushed."
+          echo "This workflow is failing intentionally to trigger a new run with formatted code."
+          exit 1

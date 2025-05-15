@@ -1,10 +1,12 @@
-name: Lint
+name: Reusable Lint
+
 on:
   workflow_call:
-  push:
-    branches-ignore:
-      - main
-      - dev
+    outputs:
+      auto_formatted:
+        description: "Whether Black auto-formatted files and pushed changes."
+        value: ${{ jobs.lint.outputs.auto_formatted }}
+
 jobs:
   lint:
     runs-on: ubuntu-22.04

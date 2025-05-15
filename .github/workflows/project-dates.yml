@@ -1,0 +1,129 @@
+name: Update Project Dates
+
+on:
+  projects_v2_item:
+    types:
+      - edited
+
+jobs:
+  update_dates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get project data
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          USERNAME: ${{ github.repository_owner }}
+          PROJECT_NUMBER: YOUR_PROJECT_NUMBER
+        run: |
+          gh api graphql -f query='
+            query($user: String!, $number: Int!) {
+              user(login: $user){
+                projectV2(number: $number) {
+                  id
+                  fields(first:20) {
+                    nodes {
+                      ... on ProjectV2Field {
+                        id
+                        name
+                      }
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -f user=$USERNAME -F number=$PROJECT_NUMBER > project_data.json
+
+          echo 'PROJECT_ID='$(jq '.data.user.projectV2.id' project_data.json) >> $GITHUB_ENV
+          echo 'STATUS_FIELD_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name== "Status") | .id' project_data.json) >> $GITHUB_ENV
+          echo 'START_DATE_FIELD_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name== "Start Date") | .id' project_data.json) >> $GITHUB_ENV
+          echo 'COMPLETION_DATE_FIELD_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name== "Completion Date") | .id' project_data.json) >> $GITHUB_ENV
+          echo 'IN_PROGRESS_OPTION_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name== "Status") | .options[] | select(.name=="Work in Progress") |.id' project_data.json) >> $GITHUB_ENV
+          echo 'COMPLETE_OPTION_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name== "Status") | .options[] | select(.name=="Complete") |.id' project_data.json) >> $GITHUB_ENV
+
+      - name: Get current date
+        run: echo "DATE=$(date +"%Y-%m-%d")" >> $GITHUB_ENV
+
+      - name: Get item data
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ITEM_ID: ${{ github.event.projects_v2_item.node_id }}
+        run: |
+          echo 'ITEM_ID='$ITEM_ID >> $GITHUB_ENV
+
+          # Get current status of the item
+          item_status=$(gh api graphql -f query='
+            query($item: ID!, $status_field: ID!) {
+              node(id: $item) {
+                ... on ProjectV2Item {
+                  fieldValueByName(name: "Status") {
+                    ... on ProjectV2ItemFieldSingleSelectValue {
+                      name
+                      optionId
+                    }
+                  }
+                }
+              }
+            }' -f item=$ITEM_ID -f status_field=$STATUS_FIELD_ID --jq '.data.node.fieldValueByName.optionId')
+
+          echo 'CURRENT_STATUS_ID='$item_status >> $GITHUB_ENV
+
+      - name: Update date fields based on status
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          # If status is "Work in Progress", set Start Date
+          if [ "$CURRENT_STATUS_ID" == "$IN_PROGRESS_OPTION_ID" ]; then
+            gh api graphql -f query='
+              mutation (
+                $project: ID!
+                $item: ID!
+                $date_field: ID!
+                $date_value: Date!
+              ) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $project
+                  itemId: $item
+                  fieldId: $date_field
+                  value: {
+                    date: $date_value
+                  }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }' -f project=$PROJECT_ID -f item=$ITEM_ID -f date_field=$START_DATE_FIELD_ID -f date_value=$DATE
+            echo "Updated Start Date to $DATE for item in Work in Progress"
+          fi
+
+          # If status is "Complete", set Completion Date
+          if [ "$CURRENT_STATUS_ID" == "$COMPLETE_OPTION_ID" ]; then
+            gh api graphql -f query='
+              mutation (
+                $project: ID!
+                $item: ID!
+                $date_field: ID!
+                $date_value: Date!
+              ) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $project
+                  itemId: $item
+                  fieldId: $date_field
+                  value: {
+                    date: $date_value
+                  }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }' -f project=$PROJECT_ID -f item=$ITEM_ID -f date_field=$COMPLETION_DATE_FIELD_ID -f date_value=$DATE
+            echo "Updated Completion Date to $DATE for item in Complete status"
+          fi

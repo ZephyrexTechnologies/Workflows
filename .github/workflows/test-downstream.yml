@@ -1,49 +1,27 @@
-name: Stage Downstream Repositories
+name: Reusable - Stage Downstream Repositories
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      source_repo_ref:
+        description: "The branch name from the source repository to merge (e.g., dev)"
+        required: true
+        type: string
+    secrets:
+      PAT_TOKEN:
+        description: "Personal Access Token for cloning/pushing to downstream repos and API calls."
+        required: true
+      DOWNSTREAM_REPOSITORIES:
+        description: "Comma-separated list of downstream repositories (e.g., owner/repo1,owner/repo2)."
+        required: true
 
 jobs:
-  check-pr-source:
-    runs-on: ubuntu-latest
-    outputs:
-      is_from_dev: ${{ steps.check_branch.outputs.is_from_dev }}
-    steps:
-      - name: Check if workflow is operating from dev branch
-        id: check_branch
-        run: |
-          IS_FROM_DEV="false"
-
-          # For pull requests, check if the source branch is dev
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.head_ref }}" == "dev" ]]; then
-            IS_FROM_DEV="true"
-            echo "This is a pull request coming from the dev branch"
-          # For directly triggered workflows, check the current branch
-          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            IS_FROM_DEV="true"
-            echo "This workflow is running directly on the dev branch"
-          else
-            echo "This workflow is not running from the dev branch (current: ${{ github.head_ref || github.ref }})"
-          fi
-
-          echo "is_from_dev=$IS_FROM_DEV" >> $GITHUB_OUTPUT
-          echo "Branch check result: is_from_dev = $IS_FROM_DEV"
-
-  run-tests:
-    needs: check-pr-source
-    uses: ./.github/workflows/test-pytest.yml
-    permissions:
-      contents: write
-
   stage-downstream:
-    needs: [check-pr-source, run-tests]
-    if: needs.check-pr-source.outputs.is_from_dev == 'true'
+    name: Stage to Downstream Repositories
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write # To checkout repository and push changes to downstream repos
+      pull-requests: write # To create pull requests in downstream repos
 
     steps:
       - name: Checkout repository
@@ -107,29 +85,29 @@ jobs:
             # Add the current repository as a remote
             echo "Adding $CURRENT_REPO as a remote source..."
             git remote add source https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/$CURRENT_REPO.git
-            git fetch source dev
+            git fetch source ${{ inputs.source_repo_ref }}
             if [ $? -ne 0 ]; then
-              echo "Failed to fetch dev branch from $CURRENT_REPO"
+              echo "Failed to fetch ${{ inputs.source_repo_ref }} branch from $CURRENT_REPO"
               exit 1
             fi
             
             # Try to merge the dev branch from the current repository
-            echo "Attempting to merge $CURRENT_REPO/dev into $REPO/dev..."
+            echo "Attempting to merge $CURRENT_REPO/${{ inputs.source_repo_ref }} into $REPO/dev..."
             
             # Create a temporary branch for testing merge conflicts
             git checkout -b temp_merge_test
             
             # Try a test merge to see if there will be conflicts
-            if ! git merge --no-commit --no-ff source/dev > /dev/null 2>&1; then
+            if ! git merge --no-commit --no-ff source/${{ inputs.source_repo_ref }} > /dev/null 2>&1; then
               # Abort the merge attempt
               git merge --abort
               
               # Get more detailed information about potential conflicts
-              echo "Merge conflict detected when trying to merge $CURRENT_REPO/dev into $REPO/dev"
+              echo "Merge conflict detected when trying to merge $CURRENT_REPO/${{ inputs.source_repo_ref }} into $REPO/dev"
               
               # Show divergent commit information
-              echo "Last 5 commits in source/dev:"
-              git log -n 5 --oneline source/dev
+              echo "Last 5 commits in source/${{ inputs.source_repo_ref }}:"
+              git log -n 5 --oneline source/${{ inputs.source_repo_ref }}
               
               echo "Last 5 commits in local dev:"
               git log -n 5 --oneline dev
@@ -144,8 +122,8 @@ jobs:
             git checkout dev
             
             # Attempt the actual merge
-            if git merge source/dev -m "Merge $CURRENT_REPO dev branch into $REPO dev branch"; then
-              echo "Successfully merged $CURRENT_REPO/dev into $REPO/dev"
+            if git merge source/${{ inputs.source_repo_ref }} -m "Merge $CURRENT_REPO ${{ inputs.source_repo_ref }} branch into $REPO dev branch"; then
+              echo "Successfully merged $CURRENT_REPO/${{ inputs.source_repo_ref }} into $REPO/dev"
               
               # Push the changes to the downstream repository
               echo "Pushing changes to $REPO/dev..."
@@ -169,7 +147,7 @@ jobs:
                 echo "Found existing PR #$PR_NUMBER in $REPO: $PR_URL"
                 
                 # Update the PR with a comment to indicate the new merge
-                COMMENT_BODY="Updated with latest changes from $CURRENT_REPO/dev"
+                COMMENT_BODY="Updated with latest changes from $CURRENT_REPO/${{ inputs.source_repo_ref }}"
                 curl -s -X POST \
                   -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
                   -H "Accept: application/vnd.github.v3+json" \
@@ -178,8 +156,8 @@ jobs:
               else
                 # Create a new pull request
                 echo "Creating new PR in $REPO..."
-                PR_TITLE="Downstream merge from $CURRENT_REPO"
-                PR_BODY="This PR was automatically created by the stage-downstream workflow in $CURRENT_REPO. It merges changes from the dev branch of $CURRENT_REPO into the main branch of $REPO."
+                PR_TITLE="Downstream merge from $CURRENT_REPO (${{ inputs.source_repo_ref }})"
+                PR_BODY="This PR was automatically created by the stage-downstream workflow in $CURRENT_REPO. It merges changes from the ${{ inputs.source_repo_ref }} branch of $CURRENT_REPO into the main branch of $REPO."
                 
                 PR_RESPONSE=$(curl -X POST \
                   -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
@@ -201,15 +179,15 @@ jobs:
               # Save PR data in a format we can parse later
               PR_DATA+=("$REPO:$PR_NUMBER:$PR_URL")
             else
-              echo "Failed to merge $CURRENT_REPO/dev into $REPO/dev"
+              echo "Failed to merge $CURRENT_REPO/${{ inputs.source_repo_ref }} into $REPO/dev"
               
               # Get more details about why the merge failed
               echo "Merge output:"
               git status
               
               # Show divergent commit information
-              echo "Last 5 commits in source/dev:"
-              git log -n 5 --oneline source/dev
+              echo "Last 5 commits in source/${{ inputs.source_repo_ref }}:"
+              git log -n 5 --oneline source/${{ inputs.source_repo_ref }}
               
               echo "Last 5 commits in local dev:"
               git log -n 5 --oneline dev

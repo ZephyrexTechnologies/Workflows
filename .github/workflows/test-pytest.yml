@@ -1,15 +1,60 @@
-name: Compare Pytest Results Between Branches
+name: Reusable Compare Pytest Results
 
 on:
   workflow_call:
-  pull_request:
-    branches:
-      - dev
+    inputs:
+      target_branch_to_compare:
+        description: "The target branch to compare against (e.g., main, refs/heads/main)."
+        required: true
+        type: string
+      python-version:
+        description: "Python version to use for testing."
+        required: false
+        type: string
+        default: "3.10"
+    outputs:
+      pr_total:
+        description: "Total tests in PR/source branch"
+        value: ${{ jobs.test-source-branch.outputs.total }}
+      pr_passed:
+        description: "Passed tests in PR/source branch"
+        value: ${{ jobs.test-source-branch.outputs.passed }}
+      pr_percentage:
+        description: "Pass percentage in PR/source branch"
+        value: ${{ jobs.test-source-branch.outputs.percentage }}
+      pr_failing_tests:
+        description: "List of failing tests in PR/source branch (JSON string)"
+        value: ${{ jobs.test-source-branch.outputs.failing_tests }}
+      pr_collection_errors:
+        description: "PR branch has collection errors"
+        value: ${{ jobs.test-source-branch.outputs.collection_errors }}
+      pr_no_tests_found:
+        description: "PR branch has no tests found"
+        value: ${{ jobs.test-source-branch.outputs.no_tests_found }}
+      target_total:
+        description: "Total tests in target branch"
+        value: ${{ jobs.test-target-branch.outputs.total }}
+      target_passed:
+        description: "Passed tests in target branch"
+        value: ${{ jobs.test-target-branch.outputs.passed }}
+      target_percentage:
+        description: "Pass percentage in target branch"
+        value: ${{ jobs.test-target-branch.outputs.percentage }}
+      target_passing_tests:
+        description: "List of passing tests in target branch (JSON string)"
+        value: ${{ jobs.test-target-branch.outputs.passing_tests }}
+      has_regressions:
+        description: "Boolean indicating if regressions were found"
+        value: ${{ jobs.compare-results.outputs.has_regressions }}
+      regression_count:
+        description: "Number of test regressions found"
+        value: ${{ jobs.compare-results.outputs.regression_count }}
+
 jobs:
   lint:
     uses: ./.github/workflows/test-lint.yml
     permissions:
-      contents: write
+      contents: write # Lint job might push changes
 
   test-source-branch:
     needs: lint
@@ -32,7 +77,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5.3.0
         with:
-          python-version: "3.10"
+          python-version: "${{ inputs.python-version }}"
 
       - name: Install dependencies
         run: |
@@ -291,12 +336,12 @@ jobs:
       - name: Checkout target branch
         uses: actions/checkout@v4.2.2
         with:
-          ref: ${{ github.base_ref }}
+          ref: ${{ inputs.target_branch_to_compare }}
 
       - name: Set up Python
         uses: actions/setup-python@v5.3.0
         with:
-          python-version: "3.10"
+          python-version: "${{ inputs.python-version }}"
 
       - name: Install dependencies
         run: |
@@ -443,7 +488,7 @@ jobs:
         run: |
           set -x
           echo "::debug::Running Python script to extract test results"
-          echo "Processing test results for target branch: ${{ github.base_ref }}"
+          echo "Processing test results for target branch: ${{ inputs.target_branch_to_compare }}"
 
           python -c "
           import json
@@ -538,6 +583,9 @@ jobs:
   compare-results:
     needs: [test-source-branch, test-target-branch]
     runs-on: ubuntu-latest
+    outputs:
+      has_regressions: ${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}
+      regression_count: ${{ steps.check-regressions.outputs.REGRESSION_COUNT }}
 
     steps:
       - name: Install bc
@@ -568,6 +616,8 @@ jobs:
             echo "::error::Test discovery errors in PR branch: $PR_ERROR_TYPE"
             echo "::error::$PR_ERROR_DETAILS"
             echo "❌ PR branch has test discovery errors. Python modules could not be imported correctly."
+            echo "HAS_REGRESSIONS=false" >> $GITHUB_OUTPUT
+            echo "REGRESSION_COUNT=0" >> $GITHUB_OUTPUT
             exit 1
           fi
 
@@ -575,6 +625,8 @@ jobs:
             echo "::debug::PR branch has no tests, failing workflow"
             echo "::error::No tests were found in the PR branch"
             echo "❌ PR branch has no tests detected. Please add test files that match pytest's discovery pattern."
+            echo "HAS_REGRESSIONS=false" >> $GITHUB_OUTPUT
+            echo "REGRESSION_COUNT=0" >> $GITHUB_OUTPUT
             exit 1
           fi
 
@@ -606,6 +658,10 @@ jobs:
           start_time = time.time()
           print(f"Debug: Starting regression analysis at {start_time}")
 
+          # Default values before attempting to read inputs
+          has_regressions_val = False
+          regression_count_val = 0
+
           try:
               # Get target branch passing tests
               target_passing_tests_json = sys.argv[1]
@@ -624,7 +680,6 @@ jobs:
               # Find tests that were passing in target but are now failing in PR
               print("Debug: Finding regressions")
               regression_start = time.time()
-              regressions = []
               
               # Use set operations for efficiency with large test suites
               target_passing_set = set(target_passing_tests)
@@ -637,6 +692,9 @@ jobs:
               print(f"Debug: Regression analysis took {time.time() - regression_start:.2f} seconds")
               print(f"Debug: Found {len(regressions)} regressions")
               
+              has_regressions_val = len(regressions) > 0
+              regression_count_val = len(regressions)
+
               # Prepare output in a file
               if regressions:
                   with open("regression_details.txt", "w") as f:
@@ -645,48 +703,44 @@ jobs:
                           f.write(f"{idx}. {test}\n")
                   print("Debug: Regression details written to file")
               
-              # Set GitHub environment variables
-              has_regressions = len(regressions) > 0
-              with open(os.environ.get("GITHUB_ENV", "/dev/null"), "a") as f:
-                  f.write(f"HAS_REGRESSIONS={str(has_regressions).lower()}\n")
-                  f.write(f"REGRESSION_COUNT={len(regressions)}\n")
-              
-              print(f"Debug: Completed in {time.time() - start_time:.2f} seconds")
           except Exception as e:
               import traceback
               print(f"Debug: Error in regression analysis: {e}")
               print(f"Debug: {traceback.format_exc()}")
-              
-              # Set safe defaults in case of failure
-              with open(os.environ.get("GITHUB_ENV", "/dev/null"), "a") as f:
-                  f.write("HAS_REGRESSIONS=false\n")
-                  f.write("REGRESSION_COUNT=0\n")
+              # In case of script error, has_regressions_val and regression_count_val remain False/0
 
-              sys.exit(1)
+          finally:
+              # Always write to GITHUB_OUTPUT to ensure outputs are set
+              print(f"Debug: Writing to GITHUB_OUTPUT: HAS_REGRESSIONS={str(has_regressions_val).lower()}, REGRESSION_COUNT={regression_count_val}")
+              with open(os.environ.get("GITHUB_OUTPUT", "/dev/null"), "a") as f:
+                  f.write(f"HAS_REGRESSIONS={str(has_regressions_val).lower()}\n")
+                  f.write(f"REGRESSION_COUNT={regression_count_val}\n")
+              print(f"Debug: Completed in {time.time() - start_time:.2f} seconds")
+              # Exit with 0 to not fail the step if script itself had an error but we set default outputs
+              sys.exit(0)
+
           EOF
 
           # Run the regression detection script with 60 second timeout
-          timeout 60 python3 check_regressions.py '${{ needs.test-target-branch.outputs.passing_tests }}' '${{ needs.test-source-branch.outputs.failing_tests }}' || echo "::warning::Regression check timed out after 60 seconds"
+          timeout 60 python3 check_regressions.py '${{ needs.test-target-branch.outputs.passing_tests }}' '${{ needs.test-source-branch.outputs.failing_tests }}'
+          # The python script sets HAS_REGRESSIONS and REGRESSION_COUNT as step outputs via GITHUB_OUTPUT
 
-          # Display regression details if they exist
-          if [ -f regression_details.txt ]; then
-            echo "::debug::Reading regression details"
-            cat regression_details.txt
-            
-            # Only output the first 20 regressions to avoid flooding the log
-            if [[ "$HAS_REGRESSIONS" == "true" ]]; then
-              if [[ "$REGRESSION_COUNT" -gt 20 ]]; then
-                echo "::error::Test regressions detected: ${REGRESSION_COUNT} tests that were passing in target branch are now failing"
-                head -n 22 regression_details.txt
-                echo "..."
-                echo "(output truncated)"
-              else
-                echo "::error::Test regressions detected"
-                cat regression_details.txt
-              fi
+          if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
+            echo "::error::Test Regressions Found: ${{ steps.check-regressions.outputs.REGRESSION_COUNT }} test(s) that were passing in target branch are now failing."
+            if [ -f regression_details.txt ]; then
+              echo "Regression Details:"
+              cat regression_details.txt # This lists the regressions
+            else
+              echo "::warning::Regression details file (regression_details.txt) not found."
             fi
           else
-            echo "::debug::No regression details file found"
+            # This case handles if HAS_REGRESSIONS is false. Check if file exists unexpectedly.
+            if [ -f regression_details.txt ]; then
+               echo "::warning::Regression details file found, but HAS_REGRESSIONS output is false. This might indicate an issue in check_regressions.py. Listing file contents:"
+               cat regression_details.txt
+            else
+               echo "No test regressions detected by the check-regressions step."
+            fi
           fi
 
       - name: Compare test results
@@ -703,7 +757,7 @@ jobs:
           echo "::debug::PR branch percentage: ${{ needs.test-source-branch.outputs.percentage }}"
 
           echo "Test Results Summary:"
-          echo "Target branch (${{ github.base_ref }}): ${{ needs.test-target-branch.outputs.passed }}/${{ needs.test-target-branch.outputs.total }} tests passed (${{ needs.test-target-branch.outputs.percentage }}%)"
+          echo "Target branch (${{ inputs.target_branch_to_compare }}): ${{ needs.test-target-branch.outputs.passed }}/${{ needs.test-target-branch.outputs.total }} tests passed (${{ needs.test-target-branch.outputs.percentage }}%)"
           echo "PR branch: ${{ needs.test-source-branch.outputs.passed }}/${{ needs.test-source-branch.outputs.total }} tests passed (${{ needs.test-source-branch.outputs.percentage }}%)"
 
           echo "::debug::Checking if PR branch has tests"
@@ -728,7 +782,8 @@ jobs:
           echo "::debug::TARGET_PERCENTAGE=$TARGET_PERCENTAGE"
           echo "::debug::PR_TOTAL=$PR_TOTAL"
           echo "::debug::TARGET_TOTAL=$TARGET_TOTAL"
-          echo "::debug::HAS_REGRESSIONS=$HAS_REGRESSIONS"
+          echo "::debug::HAS_REGRESSIONS=${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}"
+          echo "::debug::REGRESSION_COUNT=${{ steps.check-regressions.outputs.REGRESSION_COUNT }}"
 
           # Handle case where target has no tests
           if [[ "$TARGET_TOTAL" == "0" ]]; then
@@ -744,9 +799,15 @@ jobs:
           fi
 
           # Fail if any tests passed in target branch but now fail in PR branch
-          if [[ "$HAS_REGRESSIONS" == "true" ]]; then
+          if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
             echo "❌ PR branch has test regressions from target branch"
-            echo "  - $REGRESSION_COUNT tests that were passing in target branch are now failing"
+            echo "  - ${{ steps.check-regressions.outputs.REGRESSION_COUNT }} tests that were passing in target branch are now failing"
+            if [ -f regression_details.txt ]; then # Check if file exists (it should from previous step)
+                echo "Failing tests (regressions) list:"
+                cat regression_details.txt
+            else
+                echo "::warning::Regression details file (regression_details.txt) not found in Compare test results step."
+            fi
             exit 1
           fi
 
