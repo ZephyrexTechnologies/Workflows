@@ -873,7 +873,6 @@ jobs:
     needs: [lint, test-source-branch, test-target-branch, compare-results]
     if: |
       always() &&
-      secrets.DISCORD_WEBHOOK_URL != '' &&
       (
         needs.test-source-branch.outputs.collection_errors == 'true' ||
         needs.test-source-branch.outputs.no_tests_found == 'true' ||
@@ -884,8 +883,19 @@ jobs:
       message_body: ${{ steps.construct_notification.outputs.message_body_out }}
       ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
       artifact_path: ${{ steps.construct_notification.outputs.artifact_path_out }}
+      should_notify: ${{ steps.check_webhook.outputs.should_notify }}
 
     steps:
+      - name: Check webhook availability
+        id: check_webhook
+        run: |
+          if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            echo "should_notify=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_notify=false" >> $GITHUB_OUTPUT
+            echo "::warning::DISCORD_WEBHOOK_URL secret is not set. Notifications will be skipped."
+          fi
+
       - name: Download regression details (if any)
         id: download_regressions
         if: needs.compare-results.outputs.has_regressions == 'true' && needs.compare-results.outputs.regression_count > 0
@@ -987,6 +997,7 @@ jobs:
   notify-discord:
     name: Send Discord Notification
     needs: [prepare-notification]
+    if: needs.prepare-notification.outputs.should_notify == 'true'
     # Use the reusable workflow correctly
     uses: ./.github/workflows/alert-discord.yml
     with:
