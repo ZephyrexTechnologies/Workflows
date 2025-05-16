@@ -853,7 +853,7 @@ jobs:
             exit 1
           fi
 
-  # Always run basic notification preparation, but handle webhook access separately
+  # Conditionally run notification job only if needed
   prepare-notification:
     name: Prepare Notification Data
     needs: [lint, test-source-branch, test-target-branch, compare-results]
@@ -869,7 +869,7 @@ jobs:
       message_body: ${{ steps.construct_notification.outputs.message_body_out }}
       ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
       artifact_path: ${{ steps.construct_notification.outputs.artifact_path_out }}
-      should_notify: "true" # Always set to true to simplify the flow
+      should_notify: "true"
 
     steps:
       - name: Download regression details (if any)
@@ -970,7 +970,8 @@ jobs:
           echo "message_body_out=${MESSAGE}" >> $GITHUB_OUTPUT
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
 
-  # No longer check for webhook availability here
+  # Even if webhook checks are handled inside the alert workflow,
+  # we still need to pass the secret to satisfy GitHub's workflow validation
   notify-discord:
     name: Send Discord Notification
     needs: [prepare-notification]
@@ -981,4 +982,5 @@ jobs:
       ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
       artifact_paths: ${{ needs.prepare-notification.outputs.artifact_path }}
       should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
-    # No secrets section needed here - the webhook will be handled inside the alert workflow
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
