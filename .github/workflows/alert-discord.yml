@@ -43,8 +43,7 @@ jobs:
           if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
             echo "Discord webhook URL is set and will be used."
           else
-            echo "::warning::DISCORD_WEBHOOK_URL is not set or is empty. Cannot send notification."
-            echo "::warning::Make sure 'secrets: inherit' is added to the calling workflow and the webhook URL is set in the repository secrets."
+            echo "::warning::DISCORD_WEBHOOK_URL is not set or is empty. Cannot send notification. Please ensure the secret is configured in repository/organization settings and correctly passed to this workflow."
             exit 0 # Exit gracefully without error
           fi
 

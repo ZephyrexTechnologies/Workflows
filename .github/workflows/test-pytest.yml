@@ -876,12 +876,19 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
     # Secrets are not needed for this reusable workflow currently
-    # secrets: inherit 
+    # secrets: inherit
 
   # Conditionally run notification job only if needed
   prepare-notification:
     name: Prepare Notification Data
-    needs: [lint, test-source-branch, test-target-branch, compare-results, perform-regression-analysis]
+    needs:
+      [
+        lint,
+        test-source-branch,
+        test-target-branch,
+        compare-results,
+        perform-regression-analysis,
+      ]
     # Notify on collection errors, no tests found, compare result failure, or if regressions are detected
     if: |
       always() &&
@@ -899,6 +906,13 @@ jobs:
       should_notify: "true"
 
     steps:
+      - name: Check for Discord Webhook URL
+        run: |
+          if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            echo "::notice::DISCORD_WEBHOOK_URL secret is not set. Discord notifications will likely be skipped by the alert workflow if it relies on this secret."
+          else
+            echo "::debug::DISCORD_WEBHOOK_URL secret is present."
+          fi
       - name: Download regression details (if any)
         id: download_regressions
         if: needs.perform-regression-analysis.outputs.has_regressions == 'true' && needs.perform-regression-analysis.outputs.regression_count > 0
