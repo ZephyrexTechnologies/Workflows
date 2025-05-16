@@ -131,6 +131,9 @@ jobs:
           # 3. Construct the core JSON payload part for the 'payload_json' field or -d
           JSON_PAYLOAD_PART="{\\"content\\": \\"$ESCAPED_JSON_CONTENT\\"}"
 
+          echo "::debug::Attempting to send the following JSON payload to Discord:"
+          echo "$JSON_PAYLOAD_PART"
+
           # 4. Prepare curl arguments array
           CURL_ARGS=("-sS" "-X" "POST") # -sS for silent operation but show errors
 
