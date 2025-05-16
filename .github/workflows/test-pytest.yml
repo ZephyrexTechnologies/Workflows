@@ -692,41 +692,48 @@ jobs:
         id: check-regressions
         run: |
           set -x
-          # Simple check for file existence and counting entries
+          _has_regressions="false"
+          _regression_count="0"
+
           if [ -f "regression_details.txt" ]; then
             echo "Regression details file exists"
-            
             # Count regression lines (lines starting with a number and period)
-            COUNT=$(grep -c "^[0-9]\\+\\." regression_details.txt || echo "0")
-            echo "Found $COUNT regression items in file"
-            
-            # Always set outputs when file exists
-            echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
-            echo "REGRESSION_COUNT=$COUNT" >> $GITHUB_OUTPUT
+            _current_count=$(grep -c "^[0-9]\+\." regression_details.txt || echo "0")
+            echo "Found $_current_count regression items in file"
+
+            if [ "$_current_count" -gt 0 ]; then
+              _has_regressions="true"
+              _regression_count="$_current_count"
+            else
+              # File exists but no regressions counted (e.g. empty or malformed)
+              _has_regressions="false"
+              _regression_count="0"
+            fi
             
             echo "Regression details:"
             cat regression_details.txt
           else
             echo "No regression details file found - no regressions detected"
-            echo "HAS_REGRESSIONS=false" >> $GITHUB_OUTPUT
-            echo "REGRESSION_COUNT=0" >> $GITHUB_OUTPUT
+            _has_regressions="false"
+            _regression_count="0"
           fi
 
-          if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
-            echo "::error::Test Regressions Found: ${{ steps.check-regressions.outputs.REGRESSION_COUNT }} test(s) that were passing in target branch are now failing."
-            if [ -f regression_details.txt ]; then
-              echo "Regression Details:"
-              cat regression_details.txt # This lists the regressions
-            else
-              echo "::warning::Regression details file (regression_details.txt) not found."
-            fi
+          echo "HAS_REGRESSIONS=$_has_regressions" >> $GITHUB_OUTPUT
+          echo "REGRESSION_COUNT=$_regression_count" >> $GITHUB_OUTPUT
+
+          if [[ "$_has_regressions" == "true" ]]; then
+            echo "::error::Test Regressions Found: $_regression_count test(s) that were passing in target branch are now failing."
+            # The regression_details.txt is already cat-ed above if it exists
           else
-            # This case handles if HAS_REGRESSIONS is false. Check if file exists unexpectedly.
-            if [ -f regression_details.txt ]; then
-               echo "::warning::Regression details file found, but HAS_REGRESSIONS output is false. This might indicate an issue in check_regressions.py. Listing file contents:"
-               cat regression_details.txt
+            # This case handles if _has_regressions is false.
+            # Check if file exists unexpectedly (e.g., created but empty of actual regression lines)
+            if [ -f regression_details.txt ] && [ "$_has_regressions" == "false" ]; then
+               # This condition means regression_details.txt was found, but _current_count was 0 or it wasn't found.
+               # The initial cat of regression_details.txt would have shown its content.
+               echo "::notice::Regression details file (regression_details.txt) was found but no valid regression entries were counted by this step, or the file was empty."
             else
-               echo "No test regressions detected by the check-regressions step."
+               # This means regression_details.txt was not found at all.
+               echo "No test regressions detected by this step."
             fi
           fi
 
