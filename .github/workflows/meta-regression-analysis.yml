@@ -136,9 +136,15 @@ jobs:
           echo "Generated regression_details.txt content:"
           cat regression_details.txt
 
+      - name: Fail job if regressions are found
+        if: steps.check-regressions-script.outputs.HAS_REGRESSIONS == 'true'
+        run: |
+          echo "Regressions detected. Failing the job as per configuration."
+          exit 1
+
       - name: Upload regression details artifact
         uses: actions/upload-artifact@v4
         with:
           name: regression_details_pr_${{ inputs.pr_number || inputs.run_id }}_${{ inputs.item_type_plural }}
           path: regression_details.txt
-          retention-days: 7 
+          retention-days: 7

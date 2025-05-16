@@ -7,8 +7,8 @@ on:
         description: "The main message content to send. Supports markdown and newlines."
         required: true
         type: string
-      ping_user_ids:
-        description: "Comma-separated list of Discord User IDs to ping (e.g., '123456789,987654321'). Pings will be prepended to the message."
+      user_keys_to_ping:
+        description: "Comma-separated list of user keys (e.g., GitHub usernames) to ping. These keys will be looked up in the DISCORD_USER_MAP secret to find Discord User IDs."
         required: false
         type: string
         default: ""
@@ -26,6 +26,9 @@ on:
       DISCORD_WEBHOOK_URL:
         description: "The Discord Webhook URL."
         required: true
+      DISCORD_USER_MAP:
+        description: 'JSON string mapping user keys to Discord User IDs. E.g., ''{"gh_user":"discord_id","another_user":"id"}'''
+        required: false
 
 jobs:
   send-discord-alert:
@@ -54,7 +57,8 @@ jobs:
           # Secrets and inputs are passed as environment variables for safer handling in script
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           MESSAGE_BODY_INPUT: ${{ inputs.message_body }}
-          PING_USER_IDS_INPUT: ${{ inputs.ping_user_ids }}
+          USER_KEYS_TO_PING_INPUT: ${{ inputs.user_keys_to_ping }}
+          DISCORD_USER_MAP_SECRET: ${{ secrets.DISCORD_USER_MAP }}
           ARTIFACT_PATHS_INPUT: ${{ inputs.artifact_paths }}
         run: |
           set -e # Exit immediately if a command exits with a non-zero status.
@@ -65,24 +69,47 @@ jobs:
             exit 1
           fi
 
-          # 1. Construct user pings prefix
+          # Check for jq availability (required for parsing DISCORD_USER_MAP)
+          if ! command -v jq &> /dev/null; then
+              echo "::warning::jq command-line JSON processor is not available. Pings based on DISCORD_USER_MAP will not work. Please install jq on the runner."
+              # Fallback or exit if jq is critical and not found. For now, will allow message sending without pings if map is used.
+          fi
+
+          # Process message_body to convert literal '\\n' (backslash-n) to actual newlines
+          # This helps if the input message_body contains \\n instead of actual newlines.
+          PROCESSED_MESSAGE_BODY=$(echo "$MESSAGE_BODY_INPUT" | sed 's/\\\\n/\\n/g')
+
+          # 1. Construct user pings prefix based on DISCORD_USER_MAP and USER_KEYS_TO_PING_INPUT
           PINGS_PREFIX=""
-          if [ -n "$PING_USER_IDS_INPUT" ]; then
-            # Replace comma with space for easy iteration
-            FORMATTED_PINGS=$(echo "$PING_USER_IDS_INPUT" | sed 's/,/ /g')
-            for user_id in $FORMATTED_PINGS; do
-              # Trim potential whitespace around user_id if any
-              trimmed_user_id=$(echo "$user_id" | xargs)
-              if [ -n "$trimmed_user_id" ]; then
-                PINGS_PREFIX="${PINGS_PREFIX}<@${trimmed_user_id}> "
-              fi
-            done
+          if [ -n "$USER_KEYS_TO_PING_INPUT" ] && [ -n "$DISCORD_USER_MAP_SECRET" ] && command -v jq &> /dev/null; then
+            if ! echo "$DISCORD_USER_MAP_SECRET" | jq empty > /dev/null 2>&1; then
+              echo "::warning::DISCORD_USER_MAP secret is not valid JSON. Skipping pings based on user keys."
+            else
+              FORMATTED_USER_KEYS=$(echo "$USER_KEYS_TO_PING_INPUT" | sed 's/,/ /g')
+              for user_key in $FORMATTED_USER_KEYS; do
+                trimmed_user_key=$(echo "$user_key" | xargs) # Trim whitespace
+                if [ -n "$trimmed_user_key" ]; then
+                  # Safely extract Discord ID using jq with --arg
+                  discord_user_id=$(echo "$DISCORD_USER_MAP_SECRET" | jq -r --arg K "$trimmed_user_key" '.[$K]')
+                  
+                  if [ -n "$discord_user_id" ] && [ "$discord_user_id" != "null" ]; then
+                    PINGS_PREFIX="${PINGS_PREFIX}<@${discord_user_id}> "
+                  else
+                    echo "::warning::User key '$trimmed_user_key' not found in DISCORD_USER_MAP or has a null value. Skipping ping for this user."
+                  fi
+                fi
+              done
+            fi
+          elif [ -n "$USER_KEYS_TO_PING_INPUT" ] && [ -z "$DISCORD_USER_MAP_SECRET" ]; then
+            echo "::warning::'user_keys_to_ping' were provided, but the 'DISCORD_USER_MAP' secret is missing. Cannot process pings."
+          elif [ -n "$USER_KEYS_TO_PING_INPUT" ] && ! command -v jq &> /dev/null; then
+            echo "::warning::'user_keys_to_ping' were provided, but 'jq' is not available to parse 'DISCORD_USER_MAP'. Pings will be skipped."
           fi
 
           # 2. Prepare final message content for JSON
           # Escape only backslashes and double quotes. Newlines in MESSAGE_BODY_INPUT
           # will be preserved as actual newlines in the JSON content, which Discord handles.
-          CONTENT_TO_SEND="${PINGS_PREFIX}${MESSAGE_BODY_INPUT}"
+          CONTENT_TO_SEND="${PINGS_PREFIX}${PROCESSED_MESSAGE_BODY}"
           ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\/\\\\/g' -e 's/\"/\\\"/g')
 
           # 3. Construct the core JSON payload part for the 'payload_json' field or -d
