@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
 
       - name: Use Node.js ${{ inputs.node-version }}
         uses: actions/setup-node@v3 # Consider v4 if available and preferred

@@ -59,6 +59,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
         with:
+          submodules: "recursive"
           token: ${{ github.token }} # Use default GITHUB_TOKEN for pushing to the PR branch
           fetch-depth: 0
 
