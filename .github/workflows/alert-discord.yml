@@ -162,14 +162,25 @@ jobs:
 
           # 6. Execute curl and check HTTP response code
           echo "::debug::Sending notification to Discord..."
-          # The -w flag writes out the HTTP status code, -o /dev/null discards the response body from stdout
-          HTTP_RESPONSE_CODE=$(curl --write-out "%{http_code}" -o /dev/null "${CURL_ARGS[@]}")
+          # Create a temporary file for the response body
+          RESPONSE_BODY_FILE=$(mktemp)
+
+          # The -w flag writes out the HTTP status code, -o discards the response body from stdout unless redirected
+          HTTP_RESPONSE_CODE=$(curl --write-out "%{http_code}" -o "$RESPONSE_BODY_FILE" "${CURL_ARGS[@]}")
 
           if [ "$HTTP_RESPONSE_CODE" -ge 200 ] && [ "$HTTP_RESPONSE_CODE" -lt 300 ]; then
             echo "Notification sent successfully to Discord (HTTP $HTTP_RESPONSE_CODE)."
           else
             echo "::error::Failed to send Discord notification. HTTP Status Code: $HTTP_RESPONSE_CODE."
-            # For more detailed error, you might need to capture curl's stderr or the response body
-            # Example: response_body=$(curl --write-out "%{http_code}" "${CURL_ARGS[@]}") etc.
+            echo "::error::Response Body from Discord:"
+            cat "$RESPONSE_BODY_FILE"
+            # Optionally, echo more of the curl args for debugging the sent payload, omitting the webhook itself
+            # echo "::debug::Curl arguments used (webhook URL omitted for security):"
+            # Safer: iterate and print, or use printf to avoid issues with special characters in arguments
+            # TEMP_CURL_ARGS=("${CURL_ARGS[@]}") 
+            # unset TEMP_CURL_ARGS[-1] # Remove webhook URL
+            # echo "::debug:: $(printf "'%s' " "${TEMP_CURL_ARGS[@]}")"
             exit 1
           fi
+          # Clean up temp file
+          rm -f "$RESPONSE_BODY_FILE"
