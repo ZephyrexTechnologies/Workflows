@@ -1,0 +1,122 @@
+name: Reusable Discord Alert
+
+on:
+  workflow_call:
+    inputs:
+      message_body:
+        description: "The main message content to send. Supports markdown and newlines."
+        required: true
+        type: string
+      ping_user_ids:
+        description: "Comma-separated list of Discord User IDs to ping (e.g., '123456789,987654321'). Pings will be prepended to the message."
+        required: false
+        type: string
+        default: ""
+      artifact_paths:
+        description: "Comma-separated list of paths (relative to GITHUB_WORKSPACE) to image/video artifacts to upload (e.g., 'reports/image.png,output/video.mp4')."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        description: "The Discord Webhook URL."
+        required: true
+
+jobs:
+  send-discord-alert:
+    runs-on: ubuntu-latest
+    name: Send Alert to Discord
+    steps:
+      # This step assumes artifacts are already in the workspace (e.g., from a previous job or checked out code).
+      # If artifacts were created by actions/upload-artifact, they would need to be downloaded first by the calling workflow
+      # or this workflow would need a download step if it were to receive artifact names instead of paths.
+
+      - name: Send Discord Notification
+        env:
+          # Secrets and inputs are passed as environment variables for safer handling in script
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          MESSAGE_BODY_INPUT: ${{ inputs.message_body }}
+          PING_USER_IDS_INPUT: ${{ inputs.ping_user_ids }}
+          ARTIFACT_PATHS_INPUT: ${{ inputs.artifact_paths }}
+        run: |
+          set -e # Exit immediately if a command exits with a non-zero status.
+          # set -x # Uncomment for detailed command printing during debugging
+
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::error::DISCORD_WEBHOOK_URL secret is not set or empty."
+            exit 1
+          fi
+
+          # 1. Construct user pings prefix
+          PINGS_PREFIX=""
+          if [ -n "$PING_USER_IDS_INPUT" ]; then
+            # Replace comma with space for easy iteration
+            FORMATTED_PINGS=$(echo "$PING_USER_IDS_INPUT" | sed 's/,/ /g')
+            for user_id in $FORMATTED_PINGS; do
+              # Trim potential whitespace around user_id if any
+              trimmed_user_id=$(echo "$user_id" | xargs)
+              if [ -n "$trimmed_user_id" ]; then
+                PINGS_PREFIX="${PINGS_PREFIX}<@${trimmed_user_id}> "
+              fi
+            done
+          fi
+
+          # 2. Prepare final message content for JSON
+          # Escape only backslashes and double quotes. Newlines in MESSAGE_BODY_INPUT
+          # will be preserved as actual newlines in the JSON content, which Discord handles.
+          CONTENT_TO_SEND="${PINGS_PREFIX}${MESSAGE_BODY_INPUT}"
+          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\/\\\\/g' -e 's/\"/\\\"/g')
+
+          # 3. Construct the core JSON payload part for the 'payload_json' field or -d
+          JSON_PAYLOAD_PART="{\"content\": \"$ESCAPED_JSON_CONTENT\"}"
+
+          # 4. Prepare curl arguments array
+          CURL_ARGS=("-sS" "-X" "POST") # -sS for silent operation but show errors
+
+          # 5. Check for artifacts and build form data if needed
+          VALID_ARTIFACT_FILES=()
+          if [ -n "$ARTIFACT_PATHS_INPUT" ]; then
+            IFS=',' read -ra ALL_ARTIFACT_PATHS_ARRAY <<< "$ARTIFACT_PATHS_INPUT"
+            for artifact_path_item in "${ALL_ARTIFACT_PATHS_ARRAY[@]}"; do
+              trimmed_path_item=$(echo "$artifact_path_item" | xargs) # Trim whitespace from path
+              if [ -f "$trimmed_path_item" ]; then
+                VALID_ARTIFACT_FILES+=("$trimmed_path_item")
+              else
+                echo "::warning::Artifact file not found or is not a regular file, skipping: '$trimmed_path_item'"
+              fi
+            done
+          fi
+
+          if [ ${#VALID_ARTIFACT_FILES[@]} -gt 0 ]; then
+            echo "::debug::Preparing multipart/form-data request with ${#VALID_ARTIFACT_FILES[@]} artifact(s)."
+            # For multipart/form-data, the JSON payload goes into a field named 'payload_json'
+            CURL_ARGS+=("-F" "payload_json=$JSON_PAYLOAD_PART")
+            FILE_INDEX=0
+            for valid_file_path_item in "${VALID_ARTIFACT_FILES[@]}"; do
+              FILE_INDEX=$((FILE_INDEX + 1))
+              CURL_ARGS+=("-F" "file${FILE_INDEX}=@${valid_file_path_item}")
+              echo "::debug::Attaching artifact: '$valid_file_path_item' as file${FILE_INDEX}"
+            done
+          else
+            echo "::debug::Preparing application/json request (no valid artifacts)."
+            # For simple message without files, use Content-Type: application/json and -d for data
+            CURL_ARGS+=("-H" "Content-Type: application/json")
+            CURL_ARGS+=("-d" "$JSON_PAYLOAD_PART")
+          fi
+
+          # Add the Webhook URL as the last argument
+          CURL_ARGS+=("$WEBHOOK_URL")
+
+          # 6. Execute curl and check HTTP response code
+          echo "::debug::Sending notification to Discord..."
+          # The -w flag writes out the HTTP status code, -o /dev/null discards the response body from stdout
+          HTTP_RESPONSE_CODE=$(curl --write-out "%{http_code}" -o /dev/null "${CURL_ARGS[@]}")
+
+          if [ "$HTTP_RESPONSE_CODE" -ge 200 ] && [ "$HTTP_RESPONSE_CODE" -lt 300 ]; then
+            echo "Notification sent successfully to Discord (HTTP $HTTP_RESPONSE_CODE)."
+          else
+            echo "::error::Failed to send Discord notification. HTTP Status Code: $HTTP_RESPONSE_CODE."
+            # For more detailed error, you might need to capture curl's stderr or the response body
+            # Example: response_body=$(curl --write-out "%{http_code}" "${CURL_ARGS[@]}") etc.
+            exit 1
+          fi

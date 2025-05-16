@@ -1,0 +1,78 @@
+name: Reusable Storybook Tests
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use for Storybook tests"
+        required: false
+        type: string
+        default: "18.x"
+      storybook_port:
+        description: "Port for Storybook server"
+        required: false
+        type: string
+        default: "3001"
+
+jobs:
+  lint:
+    uses: ./.github/workflows/test-lint-js.yml # Please ensure this path is correct for your JS/TS linting workflow
+    permissions:
+      contents: write
+
+  test:
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Use Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v3 # Consider v4 if available and preferred
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Storybook
+        run: npm run storybook -- --port ${{ inputs.storybook_port }} &
+
+      - name: Wait for Storybook to be ready
+        run: |
+          echo "Waiting for Storybook to start on port ${{ inputs.storybook_port }}..."
+          timeout=60
+          counter=0
+          until $(curl --output /dev/null --silent --head --fail http://localhost:${{ inputs.storybook_port }}); do
+            if [ $counter -eq $timeout ]; then
+              echo "Timed out waiting for Storybook to start"
+              exit 1
+            fi
+            echo "Waiting for Storybook... ($counter seconds so far)"
+            sleep 5
+            counter=$((counter + 5))
+          done
+          echo "Storybook is up and running on port ${{ inputs.storybook_port }}!"
+
+      - name: Run Storybook tests
+        run: npm run storybook-test
+
+      # Optional: Collect and upload test coverage
+      # - name: Collect coverage
+      #   run: npx nyc report
+      #   if: always()
+      #   continue-on-error: true
+
+      # Upload artifacts if tests fail
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: storybook-test-results
+          path: |
+            ./*-snapshots/
+            ./coverage/
+          retention-days: 7
