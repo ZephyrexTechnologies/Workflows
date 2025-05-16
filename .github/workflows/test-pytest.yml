@@ -867,8 +867,9 @@ jobs:
             exit 1
           fi
 
-  notify-on-pytest-failure:
-    name: Notify on Pytest Failure
+  # This job is for preparing the notification information
+  prepare-notification:
+    name: Prepare Notification Data
     needs: [lint, test-source-branch, test-target-branch, compare-results]
     if: |
       always() &&
@@ -879,8 +880,11 @@ jobs:
         needs.compare-results.result == 'failure'
       )
     runs-on: ubuntu-latest
-    permissions:
-      contents: read # To download artifacts if needed
+    outputs:
+      message_body: ${{ steps.construct_notification.outputs.message_body_out }}
+      ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
+      artifact_path: ${{ steps.construct_notification.outputs.artifact_path_out }}
+
     steps:
       - name: Download regression details (if any)
         id: download_regressions
@@ -979,11 +983,15 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
 
-      - name: Send Discord Alert
-        uses: ./.github/workflows/alert-discord.yml
-        with:
-          message_body: ${{ steps.construct_notification.outputs.message_body_out }}
-          ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
-          artifact_paths: ${{ steps.construct_notification.outputs.artifact_path_out }}
-        secrets:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+  # This job sends the notification using the alert-discord workflow
+  notify-discord:
+    name: Send Discord Notification
+    needs: [prepare-notification]
+    # Use the reusable workflow correctly
+    uses: ./.github/workflows/alert-discord.yml
+    with:
+      message_body: ${{ needs.prepare-notification.outputs.message_body }}
+      ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
+      artifact_paths: ${{ needs.prepare-notification.outputs.artifact_path }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
