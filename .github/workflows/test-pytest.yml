@@ -871,13 +871,13 @@ jobs:
     name: Notify on Pytest Failure
     needs: [lint, test-source-branch, test-target-branch, compare-results]
     if: |
-    always() &&
-    secrets.DISCORD_WEBHOOK_URL != '' &&
-    (
-      needs.test-source-branch.outputs.collection_errors == 'true' ||
-      needs.test-source-branch.outputs.no_tests_found == 'true' ||
-      needs.compare-results.result == 'failure'
-    )
+      always() &&
+      secrets.DISCORD_WEBHOOK_URL != '' &&
+      (
+        needs.test-source-branch.outputs.collection_errors == 'true' ||
+        needs.test-source-branch.outputs.no_tests_found == 'true' ||
+        needs.compare-results.result == 'failure'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read # To download artifacts if needed
