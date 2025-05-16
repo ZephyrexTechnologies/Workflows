@@ -62,7 +62,7 @@ jobs:
           ARTIFACT_PATHS_INPUT: ${{ inputs.artifact_paths }}
         run: |
           set -e # Exit immediately if a command exits with a non-zero status.
-          # set -x # Uncomment for detailed command printing during debugging
+          set -x # Print each command before execution for robust debugging
 
           if [ -z "$WEBHOOK_URL" ]; then
             echo "::error::DISCORD_WEBHOOK_URL secret is not set or empty."
@@ -118,21 +118,27 @@ jobs:
           # Escape only backslashes and double quotes. Newlines in MESSAGE_BODY_INPUT
           # will be preserved as actual newlines in the JSON content, which Discord handles.
           CONTENT_TO_SEND="${PINGS_PREFIX}${PROCESSED_MESSAGE_BODY}"
-          #ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\\"/\\\\\\"/g')
+          echo "--- CONTENT_TO_SEND --- "
+          echo "$CONTENT_TO_SEND"
+          echo "--- END CONTENT_TO_SEND ---"
+
           # More robust escaping for JSON:
           # 1. Escape backslashes
-          # 2. Escape double quotes
-          # 3. Convert literal newlines to \\n
           ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | \
               sed -e 's/\\\\/\\\\\\\\/g' \\
                   -e 's/"/\\\\"/g' | \
               awk 'NR > 1 { printf("\\\\n") } { printf("%s", $0) }')
 
+          echo "--- ESCAPED_JSON_CONTENT --- "
+          echo "$ESCAPED_JSON_CONTENT"
+          echo "--- END ESCAPED_JSON_CONTENT ---"
+
           # 3. Construct the core JSON payload part for the 'payload_json' field or -d
           JSON_PAYLOAD_PART="{\\"content\\": \\"$ESCAPED_JSON_CONTENT\\"}"
 
-          echo "::debug::Attempting to send the following JSON payload to Discord:"
+          echo "--- JSON_PAYLOAD_PART --- "
           echo "$JSON_PAYLOAD_PART"
+          echo "--- END JSON_PAYLOAD_PART ---"
 
           # 4. Prepare curl arguments array
           CURL_ARGS=("-sS" "-X" "POST") # -sS for silent operation but show errors
@@ -185,12 +191,13 @@ jobs:
             echo "::error::Failed to send Discord notification. HTTP Status Code: $HTTP_RESPONSE_CODE."
             echo "::error::Response Body from Discord:"
             cat "$RESPONSE_BODY_FILE"
-            # Optionally, echo more of the curl args for debugging the sent payload, omitting the webhook itself
-            # echo "::debug::Curl arguments used (webhook URL omitted for security):"
-            # Safer: iterate and print, or use printf to avoid issues with special characters in arguments
-            # TEMP_CURL_ARGS=("${CURL_ARGS[@]}") 
-            # unset TEMP_CURL_ARGS[-1] # Remove webhook URL
-            # echo "::debug:: $(printf "'%s' " "${TEMP_CURL_ARGS[@]}")"
+            echo "--- CURL ARGS (Webhook URL Redacted) ---"
+            TEMP_CURL_ARGS=("${CURL_ARGS[@]}")
+            if [ ${#TEMP_CURL_ARGS[@]} -gt 0 ]; then
+              unset TEMP_CURL_ARGS[-1] # Remove webhook URL from the temporary copy
+              echo "$(printf \"'%s' \" \"${TEMP_CURL_ARGS[@]}\")"
+            fi
+            echo "--- END CURL ARGS ---"
             exit 1
           fi
           # Clean up temp file
