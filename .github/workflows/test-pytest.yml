@@ -739,26 +739,18 @@ jobs:
 
           # First, check if the file exists
           if [ -f regression_details.txt ]; then
-            echo "::debug::Regression details file exists, checking content"
-            # Count number of lines in the file
-            REGRESSION_COUNT_FROM_FILE=$(grep -c "^\d\+\." regression_details.txt || echo 0)
-            echo "::debug::Regression count from file: $REGRESSION_COUNT_FROM_FILE"
+            echo "Regression details file exists, checking content"
             
-            # Check if the file indicates regressions
-            if grep -q "Found .* tests that were passing" regression_details.txt; then
-              # Force the correct outputs based on the file content
-              echo "::debug::Setting outputs based on file content"
-              echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT 
-              echo "REGRESSION_COUNT=$REGRESSION_COUNT_FROM_FILE" >> $GITHUB_OUTPUT
-              echo "Test regressions found. Forcing HAS_REGRESSIONS=true."
+            # Simple count of regression lines (numbered list items)
+            LINE_COUNT=$(grep -c "^[0-9]" regression_details.txt || echo "0")
+            echo "Found $LINE_COUNT regression lines in file"
+            
+            # If file exists with regressions, make sure our output is set correctly
+            if [ "$LINE_COUNT" -gt "0" ]; then
+              echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
+              echo "REGRESSION_COUNT=$LINE_COUNT" >> $GITHUB_OUTPUT
+              echo "Test regressions found in file. Setting HAS_REGRESSIONS=true with $LINE_COUNT regressions."
             fi
-          fi
-
-          # Double-check outputs are consistent
-          if [[ -f regression_details.txt && "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" != "true" ]]; then
-            echo "::warning::Inconsistency detected: Regression file exists but HAS_REGRESSIONS is not true"
-            echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
-            echo "REGRESSION_COUNT=$(grep -c "^[0-9]\\+\\." regression_details.txt || echo 0)" >> $GITHUB_OUTPUT
           fi
 
           if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
@@ -917,21 +909,16 @@ jobs:
     steps:
       - name: Check webhook availability
         id: check_webhook
-        env:
-          # Set a local environment variable for the secret
-          # This allows us to check its existence properly
-          SECRET_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # If the URL is passed and not empty, set should_notify=true
-          if [ -n "$SECRET_URL" ]; then
+          # Direct method to check if a secret is set
+          # Use special construct to handle empty strings safely
+          if [ -n "${{ secrets.DISCORD_WEBHOOK_URL || '_UNSET_' }}" ] && [ "${{ secrets.DISCORD_WEBHOOK_URL || '_UNSET_' }}" != "_UNSET_" ]; then
             echo "should_notify=true" >> $GITHUB_OUTPUT
             echo "Discord webhook URL is set and will be used for notifications."
           else
             echo "should_notify=false" >> $GITHUB_OUTPUT
-            echo "::warning::DISCORD_WEBHOOK_URL secret is not set or empty in the repository. Notifications will be skipped."
-            # Additional debug information
-            echo "::debug::Make sure 'secrets: inherit' is added to the calling workflow"
-            echo "::debug::And ensure DISCORD_WEBHOOK_URL is properly set in repository secrets"
+            echo "::warning::DISCORD_WEBHOOK_URL secret is not properly set or accessible in the repository."
+            echo "::warning::Make sure 'secrets: inherit' is added to the calling workflow and the secret is set at the repository level."
           fi
 
       - name: Download regression details (if any)
