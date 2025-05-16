@@ -1,0 +1,49 @@
+name: Reusable Build and Test Next.js
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use for build and test"
+        required: false
+        type: string
+        default: "20"
+
+jobs:
+  lint:
+    uses: ./.github/workflows/test-lint-py.yml
+    permissions:
+      contents: write
+
+  build-baremetal:
+    runs-on: ubuntu-latest
+    name: Build / Baremetal
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          fetch-depth: 1
+      - name: Check Submodules
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Listing current directory contents:"
+          ls -a
+          echo "\nChecking status of all submodules:"
+          git submodule foreach --quiet ' \
+            echo "\n--- Submodule: $name ---"; \
+            echo "Path: $path"; \
+            echo "Current directory: $(pwd)"; \
+            echo "Listing contents:"; \
+            ls -a; \
+            echo "Remote URLs:"; \
+            git remote -v; \
+            echo "Status:"; \
+            git status; \
+            echo "---------------------------" \
+          '
+      - name: Install Packages and Build
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: npm i lightningcss-linux-x64-gnu @tailwindcss/oxide-linux-x64-gnu sass-embedded-linux-x64 && npm install && npm run build
