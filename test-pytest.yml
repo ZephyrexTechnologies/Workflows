@@ -956,12 +956,12 @@ jobs:
           REGRESSION_FILE_PATH: "regression_details.txt"
           DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
         run: |
-          MESSAGE=""
+          MESSAGE_LINES=() # Use an array to build message lines
           PING_USERS=""
           ARTIFACT_PATH_OUTPUT=""
 
           # 1. Determine Pings
-          if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ]; then
+          if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && command -v jq &> /dev/null; then
             ASSIGNEE_LOGINS=$(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty' | tr '\\n' ' ')
             if [ -n "$ASSIGNEE_LOGINS" ]; then
               for login in $ASSIGNEE_LOGINS; do
@@ -972,6 +972,8 @@ jobs:
               done
               PING_USERS=${PING_USERS%,} # Remove trailing comma
             fi
+          elif [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && ! command -v jq &> /dev/null; then
+            echo "::warning::jq is not available. Cannot map GitHub users to Discord IDs for pings."
           fi
           echo "ping_user_ids_out=$PING_USERS" >> $GITHUB_OUTPUT
 
@@ -980,38 +982,70 @@ jobs:
           TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
 
           # 2. Construct Message Body
-          MESSAGE_FORMAT="**Pytest Failure on [%s](%s/tree/%s) for PR [#%s: %s](%s)**\\nTarget Branch: \`%s\`\\n[View Workflow Run](%s)\\n\\n%s" # Main message format string
-          FAILURE_DETAILS=""
+          MESSAGE_LINES+=("**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
+          MESSAGE_LINES+=("Target Branch: \`${TARGET_BRANCH}\`")
+          MESSAGE_LINES+=("[View Workflow Run](${ACTION_RUN_URL})")
+          MESSAGE_LINES+=("") # Blank line
 
           if [ "$PR_COLLECTION_ERRORS" == "true" ]; then
-            FAILURE_DETAILS="**Error Type:** Test Collection Error (${PR_ERROR_TYPE})\\n**Details:** \`${PR_ERROR_DETAILS_TRUNCATED:0:1000}\`"
+            MESSAGE_LINES+=("**Error Type:** Test Collection Error (${PR_ERROR_TYPE})")
+            MESSAGE_LINES+=("**Details:** \`${PR_ERROR_DETAILS_TRUNCATED:0:1000}\`")
           elif [ "$PR_NO_TESTS_FOUND" == "true" ]; then
-            FAILURE_DETAILS="**Error Type:** No Tests Found in PR branch."
+            MESSAGE_LINES+=("**Error Type:** No Tests Found in PR branch.")
           elif [ "$COMPARE_RESULT" == "failure" ]; then
-            COMPARISON_SUMMARY="**Test Comparison Summary:**\\n- PR [\`${PR_BRANCH}\`]: Passed ${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} (${PR_PERCENTAGE}%%)\\n- Target [\`${TARGET_BRANCH}\`]: Passed ${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} (${TARGET_PERCENTAGE}%%)"
-            REGRESSION_INFO=""
+            MESSAGE_LINES+=("**Test Comparison Summary:**")
+            MESSAGE_LINES+=("- PR [\`${PR_BRANCH}\`]: Passed ${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} (${PR_PERCENTAGE}%%)")
+            MESSAGE_LINES+=("- Target [\`${TARGET_BRANCH}\`]: Passed ${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} (${TARGET_PERCENTAGE}%%)")
+
             if [ "$HAS_REGRESSIONS" == "true" ] && [ "$REGRESSION_COUNT" -gt 0 ]; then
-              REGRESSION_INFO="\\n- **Regressions Found: ${REGRESSION_COUNT}**"
+              MESSAGE_LINES+=("- **Regressions Found: ${REGRESSION_COUNT}**")
               if [ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ] && [ -s "$REGRESSION_FILE_PATH" ]; then
-                REGRESSION_INFO+="\\n- _See attached regression_details.txt for the list of regressed tests._"
-                ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+                if [ "$REGRESSION_COUNT" -le 10 ]; then
+                  MESSAGE_LINES+=("  Regressed Tests:")
+                  # regression_details.txt format from meta-regression-analysis.yml:
+                  # Line 1: Header text
+                  # Line 2: Blank line
+                  # Line 3 onwards: "idx. item_name"
+                  mapfile -t ITEMS_FROM_FILE < <(tail -n +3 "$REGRESSION_FILE_PATH" | sed -E 's/^[0-9]+\\.\\s*//')
+                  for item in "${ITEMS_FROM_FILE[@]}"; do
+                    MESSAGE_LINES+=("  - $item")
+                  done
+                  ARTIFACT_PATH_OUTPUT="" # No artifact attached for inline list
+                else # More than 10 regressions
+                  MESSAGE_LINES+=("- _See attached ${REGRESSION_FILE_PATH##*/} for the list of ${REGRESSION_COUNT} regressed tests._")
+                  ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+                fi
               else
-                REGRESSION_INFO+="\\n- _Could not retrieve regression details artifact._"
+                MESSAGE_LINES+=("- _Could not retrieve or read regression details artifact ($REGRESSION_FILE_PATH). Download outcome: $DOWNLOAD_REGRESSIONS_OUTCOME._")
+                ARTIFACT_PATH_OUTPUT="" # Ensure no artifact path if download/read failed
               fi
             elif [ "$HAS_REGRESSIONS" == "false" ] && [ "$REGRESSION_COUNT" == "0" ]; then
-              REGRESSION_INFO="\\n- No new test regressions from target branch, but other comparison metrics failed."
+              # This case is when compare-results failed, but it wasn't due to new regressions.
+              MESSAGE_LINES+=("- No new test regressions from target branch were detected, but other comparison metrics failed.")
             else
-               REGRESSION_INFO="\\n- Comparison failed. Check logs for details."
+               # This handles unexpected regression status or count when compare-results failed.
+               MESSAGE_LINES+=("- Comparison failed. Regression Status: HAS_REGRESSIONS=${HAS_REGRESSIONS}, Count=${REGRESSION_COUNT}. Check logs for details.")
             fi
-            FAILURE_DETAILS="$COMPARISON_SUMMARY$REGRESSION_INFO"
           else
-             FAILURE_DETAILS="**Overall Result:** One or more test jobs failed. Lint: ${LINT_RESULT}, Source Test: ${SOURCE_TEST_RESULT}, Target Test: ${TARGET_TEST_RESULT}, Compare: ${COMPARE_RESULT}. Please check workflow logs."
+             # This 'else' corresponds to COMPARE_RESULT not being 'failure'.
+             # However, the job's 'if' condition includes other failure reasons like collection errors.
+             # This specific message might be for a general catch-all if other conditions weren't met but job still runs.
+             MESSAGE_LINES+=("**Overall Result:** One or more checks triggering notification failed. Lint: ${LINT_RESULT}, Source Test: ${SOURCE_TEST_RESULT}, Target Test: ${TARGET_TEST_RESULT}, Compare: ${COMPARE_RESULT}, Regressions: ${HAS_REGRESSIONS}. Please check workflow logs.")
           fi
 
-          # Format a single-line message with embedded newlines
-          MESSAGE="**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**\\nTarget Branch: \`${TARGET_BRANCH}\`\\n[View Workflow Run](${ACTION_RUN_URL})\\n\\n${FAILURE_DETAILS}"
+          FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
+          # Remove the very last automatically added newline by printf if the array was not empty
+          if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
+            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
+          fi
 
-          echo "message_body_out=${MESSAGE}" >> $GITHUB_OUTPUT
+          echo "::debug::Final message body prepared:"
+          echo "$FINAL_MESSAGE_BODY"
+
+          echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
+          echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
 
   # Even if webhook checks are handled inside the alert workflow,
@@ -1031,3 +1065,4 @@ jobs:
       should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      DISCORD_USER_MAP: ${{ secrets.GH_TO_DISCORD_USER_MAP }}

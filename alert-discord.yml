@@ -82,18 +82,24 @@ jobs:
           # 1. Construct user pings prefix based on DISCORD_USER_MAP and PING_USER_IDS_INPUT
           PINGS_PREFIX=""
           if [ -n "$PING_USER_IDS_INPUT" ] && [ -n "$DISCORD_USER_MAP_SECRET" ] && command -v jq &> /dev/null; then
+            echo "Debug: PING_USER_IDS_INPUT = '$PING_USER_IDS_INPUT'"
+            echo "Debug: DISCORD_USER_MAP_SECRET = '$DISCORD_USER_MAP_SECRET'"
+            echo "Debug: Checking if DISCORD_USER_MAP_SECRET is valid JSON..."
             if ! echo "$DISCORD_USER_MAP_SECRET" | jq empty > /dev/null 2>&1; then
               echo "::warning::DISCORD_USER_MAP secret is not valid JSON. Skipping pings based on user keys."
             else
+              echo "Debug: DISCORD_USER_MAP is valid JSON."
               FORMATTED_USER_KEYS=$(echo "$PING_USER_IDS_INPUT" | sed 's/,/ /g')
               for user_key in $FORMATTED_USER_KEYS; do
                 trimmed_user_key=$(echo "$user_key" | xargs) # Trim whitespace
+                echo "Debug: Processing trimmed_user_key = '$trimmed_user_key'"
                 if [ -n "$trimmed_user_key" ]; then
                   # Safely extract Discord ID using jq with --arg
                   discord_user_id=$(echo "$DISCORD_USER_MAP_SECRET" | jq -r --arg K "$trimmed_user_key" '.[$K]')
-                  
+                  echo "Debug: For key '$trimmed_user_key', got discord_user_id = '$discord_user_id'"
                   if [ -n "$discord_user_id" ] && [ "$discord_user_id" != "null" ]; then
                     PINGS_PREFIX="${PINGS_PREFIX}<@${discord_user_id}> "
+                    echo "Debug: Added ping for $trimmed_user_key. PINGS_PREFIX = '$PINGS_PREFIX'"
                   else
                     echo "::warning::User key '$trimmed_user_key' not found in DISCORD_USER_MAP or has a null value. Skipping ping for this user."
                   fi
@@ -101,8 +107,10 @@ jobs:
               done
             fi
           elif [ -n "$PING_USER_IDS_INPUT" ] && [ -z "$DISCORD_USER_MAP_SECRET" ]; then
+            echo "Debug: PING_USER_IDS_INPUT is present, but DISCORD_USER_MAP_SECRET is empty. Cannot map keys to IDs."
             echo "::warning::'ping_user_ids' were provided, but the 'DISCORD_USER_MAP' secret is missing. Cannot process pings."
           elif [ -n "$PING_USER_IDS_INPUT" ] && ! command -v jq &> /dev/null; then
+            echo "Debug: PING_USER_IDS_INPUT is present, but jq command is not available."
             echo "::warning::'ping_user_ids' were provided, but 'jq' is not available to parse 'DISCORD_USER_MAP'. Pings will be skipped."
           fi
 
