@@ -7,7 +7,7 @@ on:
         description: "The main message content to send. Supports markdown and newlines."
         required: true
         type: string
-      user_keys_to_ping:
+      ping_user_ids:
         description: "Comma-separated list of user keys (e.g., GitHub usernames) to ping. These keys will be looked up in the DISCORD_USER_MAP secret to find Discord User IDs."
         required: false
         type: string
@@ -57,7 +57,7 @@ jobs:
           # Secrets and inputs are passed as environment variables for safer handling in script
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           MESSAGE_BODY_INPUT: ${{ inputs.message_body }}
-          USER_KEYS_TO_PING_INPUT: ${{ inputs.user_keys_to_ping }}
+          PING_USER_IDS_INPUT: ${{ inputs.ping_user_ids }}
           DISCORD_USER_MAP_SECRET: ${{ secrets.DISCORD_USER_MAP }}
           ARTIFACT_PATHS_INPUT: ${{ inputs.artifact_paths }}
         run: |
@@ -79,13 +79,13 @@ jobs:
           # This helps if the input message_body contains \\n instead of actual newlines.
           PROCESSED_MESSAGE_BODY=$(echo "$MESSAGE_BODY_INPUT" | sed 's/\\\\n/\\n/g')
 
-          # 1. Construct user pings prefix based on DISCORD_USER_MAP and USER_KEYS_TO_PING_INPUT
+          # 1. Construct user pings prefix based on DISCORD_USER_MAP and PING_USER_IDS_INPUT
           PINGS_PREFIX=""
-          if [ -n "$USER_KEYS_TO_PING_INPUT" ] && [ -n "$DISCORD_USER_MAP_SECRET" ] && command -v jq &> /dev/null; then
+          if [ -n "$PING_USER_IDS_INPUT" ] && [ -n "$DISCORD_USER_MAP_SECRET" ] && command -v jq &> /dev/null; then
             if ! echo "$DISCORD_USER_MAP_SECRET" | jq empty > /dev/null 2>&1; then
               echo "::warning::DISCORD_USER_MAP secret is not valid JSON. Skipping pings based on user keys."
             else
-              FORMATTED_USER_KEYS=$(echo "$USER_KEYS_TO_PING_INPUT" | sed 's/,/ /g')
+              FORMATTED_USER_KEYS=$(echo "$PING_USER_IDS_INPUT" | sed 's/,/ /g')
               for user_key in $FORMATTED_USER_KEYS; do
                 trimmed_user_key=$(echo "$user_key" | xargs) # Trim whitespace
                 if [ -n "$trimmed_user_key" ]; then
@@ -100,10 +100,10 @@ jobs:
                 fi
               done
             fi
-          elif [ -n "$USER_KEYS_TO_PING_INPUT" ] && [ -z "$DISCORD_USER_MAP_SECRET" ]; then
-            echo "::warning::'user_keys_to_ping' were provided, but the 'DISCORD_USER_MAP' secret is missing. Cannot process pings."
-          elif [ -n "$USER_KEYS_TO_PING_INPUT" ] && ! command -v jq &> /dev/null; then
-            echo "::warning::'user_keys_to_ping' were provided, but 'jq' is not available to parse 'DISCORD_USER_MAP'. Pings will be skipped."
+          elif [ -n "$PING_USER_IDS_INPUT" ] && [ -z "$DISCORD_USER_MAP_SECRET" ]; then
+            echo "::warning::'ping_user_ids' were provided, but the 'DISCORD_USER_MAP' secret is missing. Cannot process pings."
+          elif [ -n "$PING_USER_IDS_INPUT" ] && ! command -v jq &> /dev/null; then
+            echo "::warning::'ping_user_ids' were provided, but 'jq' is not available to parse 'DISCORD_USER_MAP'. Pings will be skipped."
           fi
 
           # 2. Prepare final message content for JSON
