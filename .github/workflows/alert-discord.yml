@@ -118,10 +118,18 @@ jobs:
           # Escape only backslashes and double quotes. Newlines in MESSAGE_BODY_INPUT
           # will be preserved as actual newlines in the JSON content, which Discord handles.
           CONTENT_TO_SEND="${PINGS_PREFIX}${PROCESSED_MESSAGE_BODY}"
-          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\/\\\\/g' -e 's/\"/\\\"/g')
+          #ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\\"/\\\\\\"/g')
+          # More robust escaping for JSON:
+          # 1. Escape backslashes
+          # 2. Escape double quotes
+          # 3. Convert literal newlines to \\n
+          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | \
+              sed -e 's/\\\\/\\\\\\\\/g' \\
+                  -e 's/"/\\\\"/g' | \
+              awk 'NR > 1 { printf("\\\\n") } { printf("%s", $0) }')
 
           # 3. Construct the core JSON payload part for the 'payload_json' field or -d
-          JSON_PAYLOAD_PART="{\"content\": \"$ESCAPED_JSON_CONTENT\"}"
+          JSON_PAYLOAD_PART="{\\"content\\": \\"$ESCAPED_JSON_CONTENT\\"}"
 
           # 4. Prepare curl arguments array
           CURL_ARGS=("-sS" "-X" "POST") # -sS for silent operation but show errors

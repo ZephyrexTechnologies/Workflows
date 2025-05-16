@@ -803,16 +803,14 @@ jobs:
           # Fail if any tests passed in target branch but now fail in PR branch
           if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]]; then
             echo "❌ PR branch has test regressions from target branch"
-            echo "  - ${{ needs.perform-regression-analysis.outputs.regression_count }} tests that were passing in target branch are now failing"
-            # Attempt to download the artifact from the reusable workflow
-            # Note: This requires the artifact to be available.
-            # Consider passing artifact name/path if needed, or rely on a consistent name.
-            echo "Attempting to find regression details..."
-            # The reusable workflow uploads 'regression_details.txt' with a dynamic name.
-            # We need to know that name or download all artifacts from the called workflow.
-            # For now, we'll assume it's directly available if has_regressions is true,
-            # as the reusable workflow is expected to create it.
-            # A more robust solution would involve downloading the specific artifact by its name.
+            REGRESSION_COUNT_VAL=${{ needs.perform-regression-analysis.outputs.regression_count }}
+            echo "  - $REGRESSION_COUNT_VAL tests that were passing in target branch are now failing"
+
+            echo "### :x: Test Regressions Detected!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**$REGRESSION_COUNT_VAL test(s) that were passing in the target branch are now failing in the PR branch.**" >> $GITHUB_STEP_SUMMARY
+            echo "This job (\`compare-results\`) has been marked as failed due to these regressions." >> $GITHUB_STEP_SUMMARY
+
             if [ -f regression_details.txt ]; then # Check if file exists (it should from previous step)
                 echo "Failing tests (regressions) list:"
                 cat regression_details.txt
@@ -848,6 +846,13 @@ jobs:
             echo "❌ PR branch has worse test results than target branch"
             echo "  - Passed tests: $PR_PASSED vs $TARGET_PASSED on target branch"
             echo "  - Pass percentage: $PR_PERCENTAGE% vs $TARGET_PERCENTAGE% on target branch"
+            
+            # Add to job summary for general comparison failure
+            echo "### :x: Test Comparison Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The PR branch has worse test results than the target branch:" >> $GITHUB_STEP_SUMMARY
+            echo "- Passed tests: $PR_PASSED (PR) vs $TARGET_PASSED (Target)" >> $GITHUB_STEP_SUMMARY
+            echo "- Pass percentage: $PR_PERCENTAGE% (PR) vs $TARGET_PERCENTAGE% (Target)" >> $GITHUB_STEP_SUMMARY
             
             # Calculate regression metrics
             if (( $(echo "$PR_PASSED < $TARGET_PASSED" | bc -l) )); then
