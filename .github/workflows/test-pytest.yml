@@ -648,75 +648,74 @@ jobs:
             echo "⚠️ Target branch has no tests detected. PR branch tests will still be evaluated."
           fi
 
-      - name: Check for regressions and force output
-        id: check-regressions
+      # Split the regression check into separate steps for better control
+      - name: Run regression analysis
         run: |
           set -x
-          echo "::debug::Checking for regressions from target branch to PR branch"
+          echo "Running regression analysis..."
 
-          # Run the regression detection script
-          timeout 60 python3 - << 'EOF'
+          python3 - << 'EOF'
           import json
-          import sys
           import os
 
-          # Set default values
-          has_regressions = False
-          regression_count = 0
-
           try:
-              # Parse the inputs from environment
+              # Parse the inputs
               target_passing_str = '''${{ needs.test-target-branch.outputs.passing_tests }}'''
               pr_failing_str = '''${{ needs.test-source-branch.outputs.failing_tests }}'''
-
-              # Parse JSON
+              
+              # Parse JSON 
               target_passing = json.loads(target_passing_str) if target_passing_str and target_passing_str != '[]' else []
               pr_failing = json.loads(pr_failing_str) if pr_failing_str and pr_failing_str != '[]' else []
-
-              # Find regressions (tests that were passing in target but failing in PR)
+              
+              print(f"Parsed {len(target_passing)} passing tests from target branch")
+              print(f"Parsed {len(pr_failing)} failing tests from PR branch")
+              
+              # Find regressions using set operations
               target_passing_set = set(target_passing)
               pr_failing_set = set(pr_failing)
-              regression_tests = target_passing_set.intersection(pr_failing_set)
-              regressions = list(regression_tests)
+              regression_tests = list(target_passing_set.intersection(pr_failing_set))
               
-              # Update regression status
-              has_regressions = len(regressions) > 0
-              regression_count = len(regressions)
-              
-              # Always write regression details file if there are regressions
-              if regressions:
-                  print(f"Found {len(regressions)} test regressions!")
+              # Write results to file if there are regressions
+              if regression_tests:
+                  print(f"Found {len(regression_tests)} regression(s)!")
+                  
                   with open("regression_details.txt", "w") as f:
-                      f.write(f"Found {len(regressions)} tests that were passing in target branch but now failing in PR branch:\n\n")
-                      for idx, test in enumerate(sorted(regressions), 1):
+                      f.write(f"Found {len(regression_tests)} tests that were passing in target branch but now failing in PR branch:\n\n")
+                      for idx, test in enumerate(sorted(regression_tests), 1):
                           f.write(f"{idx}. {test}\n")
+                  print("Regression details written to file")
+              else:
+                  print("No regressions found")
           except Exception as e:
               print(f"Error in regression analysis: {e}")
               import traceback
               print(traceback.format_exc())
-
-          # Always write output
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"HAS_REGRESSIONS={str(has_regressions).lower()}\n")
-              f.write(f"REGRESSION_COUNT={regression_count}\n")
           EOF
 
-          # FORCE CHECK: If regression_details.txt exists, it means there are regressions
-          # This is a fallback in case the Python script output is inconsistent
+          echo "Regression analysis completed"
+
+      - name: Check for regression details file
+        id: check-regressions
+        run: |
+          set -x
+          # Simple check for file existence and counting entries
           if [ -f "regression_details.txt" ]; then
-            echo "Regression details file exists - FORCING HAS_REGRESSIONS=true"
-            echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
+            echo "Regression details file exists"
             
-            # Count the regression lines (lines starting with a number followed by a period)
+            # Count regression lines (lines starting with a number and period)
             COUNT=$(grep -c "^[0-9]\+\." regression_details.txt || echo "0")
-            echo "Found $COUNT regression entries in the file"
+            echo "Found $COUNT regression items in file"
+            
+            # Always set outputs when file exists
+            echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
             echo "REGRESSION_COUNT=$COUNT" >> $GITHUB_OUTPUT
             
-            # Display the contents for log examination
             echo "Regression details:"
             cat regression_details.txt
           else
             echo "No regression details file found - no regressions detected"
+            echo "HAS_REGRESSIONS=false" >> $GITHUB_OUTPUT
+            echo "REGRESSION_COUNT=0" >> $GITHUB_OUTPUT
           fi
 
           if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
@@ -854,7 +853,7 @@ jobs:
             exit 1
           fi
 
-  # This job is for preparing the notification information
+  # Always run basic notification preparation, but handle webhook access separately
   prepare-notification:
     name: Prepare Notification Data
     needs: [lint, test-source-branch, test-target-branch, compare-results]
@@ -870,23 +869,9 @@ jobs:
       message_body: ${{ steps.construct_notification.outputs.message_body_out }}
       ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
       artifact_path: ${{ steps.construct_notification.outputs.artifact_path_out }}
-      should_notify: ${{ steps.check_webhook.outputs.should_notify }}
+      should_notify: "true" # Always set to true to simplify the flow
 
     steps:
-      - name: Check webhook availability
-        id: check_webhook
-        run: |
-          # Direct method to check if a secret is set
-          # Use special construct to handle empty strings safely
-          if [ -n "${{ secrets.DISCORD_WEBHOOK_URL || '_UNSET_' }}" ] && [ "${{ secrets.DISCORD_WEBHOOK_URL || '_UNSET_' }}" != "_UNSET_" ]; then
-            echo "should_notify=true" >> $GITHUB_OUTPUT
-            echo "Discord webhook URL is set and will be used for notifications."
-          else
-            echo "should_notify=false" >> $GITHUB_OUTPUT
-            echo "::warning::DISCORD_WEBHOOK_URL secret is not properly set or accessible in the repository."
-            echo "::warning::Make sure 'secrets: inherit' is added to the calling workflow and the secret is set at the repository level."
-          fi
-
       - name: Download regression details (if any)
         id: download_regressions
         if: needs.compare-results.outputs.has_regressions == 'true' && needs.compare-results.outputs.regression_count > 0
@@ -985,12 +970,10 @@ jobs:
           echo "message_body_out=${MESSAGE}" >> $GITHUB_OUTPUT
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
 
-  # This job sends the notification using the alert-discord workflow if webhook is available
+  # No longer check for webhook availability here
   notify-discord:
     name: Send Discord Notification
     needs: [prepare-notification]
-    # Always run this job, but the job will check internally if notification should be sent
-    # This avoids issues with conditional access to secrets
     if: always()
     uses: ./.github/workflows/alert-discord.yml
     with:
@@ -998,5 +981,4 @@ jobs:
       ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
       artifact_paths: ${{ needs.prepare-notification.outputs.artifact_path }}
       should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
-    secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    # No secrets section needed here - the webhook will be handled inside the alert workflow
