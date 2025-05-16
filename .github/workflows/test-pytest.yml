@@ -160,11 +160,6 @@ jobs:
               echo "::debug::Extracting detailed error information for $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-              echo "::debug::Error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
-            else
-              # If we couldn't find a specific file, get general error info
-              grep -A 15 "$ERROR_TYPE" collection_output.txt > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
             fi
             
             echo "::error::Discovery error details: ${ERROR_DETAILS:0:200}..."
@@ -626,8 +621,6 @@ jobs:
             echo "::error::Test discovery errors in PR branch: $PR_ERROR_TYPE"
             echo "::error::$PR_ERROR_DETAILS"
             echo "❌ PR branch has test discovery errors. Python modules could not be imported correctly."
-            echo "HAS_REGRESSIONS=false" >> $GITHUB_OUTPUT
-            echo "REGRESSION_COUNT=0" >> $GITHUB_OUTPUT
             exit 1
           fi
 
@@ -635,8 +628,6 @@ jobs:
             echo "::debug::PR branch has no tests, failing workflow"
             echo "::error::No tests were found in the PR branch"
             echo "❌ PR branch has no tests detected. Please add test files that match pytest's discovery pattern."
-            echo "HAS_REGRESSIONS=false" >> $GITHUB_OUTPUT
-            echo "REGRESSION_COUNT=0" >> $GITHUB_OUTPUT
             exit 1
           fi
 

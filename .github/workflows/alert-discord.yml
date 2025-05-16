@@ -42,13 +42,14 @@ jobs:
           # Simple check for webhook URL before attempting to send
           if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
             echo "Discord webhook URL is set and will be used."
+            echo "webhook_present=true" >> $GITHUB_OUTPUT
           else
-            echo "::warning::DISCORD_WEBHOOK_URL is not set or is empty. Cannot send notification. Please ensure the secret is configured in repository/organization settings and correctly passed to this workflow."
-            exit 0 # Exit gracefully without error
+            echo "::warning::DISCORD_WEBHOOK_URL is not set or is empty. Notification will be skipped. Please ensure the secret is configured in repository/organization settings and correctly passed to this workflow."
+            echo "webhook_present=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Send Discord Notification
-        if: inputs.should_notify == 'true'
+        if: inputs.should_notify == 'true' && steps.check-webhook.outputs.webhook_present == 'true'
         env:
           # Secrets and inputs are passed as environment variables for safer handling in script
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
