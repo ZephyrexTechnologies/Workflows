@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: ""
+      should_notify:
+        description: "Boolean flag indicating whether notification should be sent."
+        required: false
+        type: string
+        default: "true"
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "The Discord Webhook URL."
@@ -32,6 +37,7 @@ jobs:
       # or this workflow would need a download step if it were to receive artifact names instead of paths.
 
       - name: Send Discord Notification
+        if: inputs.should_notify == 'true'
         env:
           # Secrets and inputs are passed as environment variables for safer handling in script
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

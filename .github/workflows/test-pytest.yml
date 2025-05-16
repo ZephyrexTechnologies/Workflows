@@ -648,109 +648,75 @@ jobs:
             echo "⚠️ Target branch has no tests detected. PR branch tests will still be evaluated."
           fi
 
-      - name: Check for regressions
+      - name: Check for regressions and force output
         id: check-regressions
         run: |
           set -x
           echo "::debug::Checking for regressions from target branch to PR branch"
 
-          # Write Python script to a temporary file for better readability
-          cat > check_regressions.py << 'EOF'
+          # Run the regression detection script
+          timeout 60 python3 - << 'EOF'
           import json
           import sys
           import os
-          import time
 
-          # Add timers to detect potential hang points
-          start_time = time.time()
-          print(f"Debug: Starting regression analysis at {start_time}")
-
-          # Default values before attempting to read inputs
-          has_regressions_val = False
-          regression_count_val = 0
+          # Set default values
+          has_regressions = False
+          regression_count = 0
 
           try:
-              # Get target branch passing tests
-              target_passing_tests_json = sys.argv[1]
-              print(f"Debug: Target passing tests input received, size: {len(target_passing_tests_json)}")
-              target_passing_tests = json.loads(target_passing_tests_json) if target_passing_tests_json and target_passing_tests_json != '[]' else []
-              print(f"Debug: Parsed {len(target_passing_tests)} passing tests from target branch")
+              # Parse the inputs from environment
+              target_passing_str = '''${{ needs.test-target-branch.outputs.passing_tests }}'''
+              pr_failing_str = '''${{ needs.test-source-branch.outputs.failing_tests }}'''
 
-              # Get PR branch failing tests
-              pr_failing_tests_json = sys.argv[2]
-              print(f"Debug: PR failing tests input received, size: {len(pr_failing_tests_json)}")
-              pr_failing_tests = json.loads(pr_failing_tests_json) if pr_failing_tests_json and pr_failing_tests_json != '[]' else []
-              print(f"Debug: Parsed {len(pr_failing_tests)} failing tests from PR branch")
-              
-              print(f"Debug: Processing took {time.time() - start_time:.2f} seconds")
+              # Parse JSON
+              target_passing = json.loads(target_passing_str) if target_passing_str and target_passing_str != '[]' else []
+              pr_failing = json.loads(pr_failing_str) if pr_failing_str and pr_failing_str != '[]' else []
 
-              # Find tests that were passing in target but are now failing in PR
-              print("Debug: Finding regressions")
-              regression_start = time.time()
-              
-              # Use set operations for efficiency with large test suites
-              target_passing_set = set(target_passing_tests)
-              pr_failing_set = set(pr_failing_tests)
-              
-              # Find tests that were passing in target but failing in PR using set intersection
+              # Find regressions (tests that were passing in target but failing in PR)
+              target_passing_set = set(target_passing)
+              pr_failing_set = set(pr_failing)
               regression_tests = target_passing_set.intersection(pr_failing_set)
               regressions = list(regression_tests)
               
-              print(f"Debug: Regression analysis took {time.time() - regression_start:.2f} seconds")
-              print(f"Debug: Found {len(regressions)} regressions")
+              # Update regression status
+              has_regressions = len(regressions) > 0
+              regression_count = len(regressions)
               
-              has_regressions_val = len(regressions) > 0
-              regression_count_val = len(regressions)
-
-              # Prepare output in a file
+              # Always write regression details file if there are regressions
               if regressions:
+                  print(f"Found {len(regressions)} test regressions!")
                   with open("regression_details.txt", "w") as f:
                       f.write(f"Found {len(regressions)} tests that were passing in target branch but now failing in PR branch:\n\n")
                       for idx, test in enumerate(sorted(regressions), 1):
                           f.write(f"{idx}. {test}\n")
-                  print("Debug: Regression details written to file")
-                  
-                  # Always ensure output is set properly                  
-                  print(f"Setting HAS_REGRESSIONS=true and REGRESSION_COUNT={regression_count_val}")
-              else:
-                  print("No regressions found. Setting HAS_REGRESSIONS=false")
-              
           except Exception as e:
+              print(f"Error in regression analysis: {e}")
               import traceback
-              print(f"Debug: Error in regression analysis: {e}")
-              print(f"Debug: {traceback.format_exc()}")
-              # In case of script error, has_regressions_val and regression_count_val remain False/0
+              print(traceback.format_exc())
 
-          finally:
-              # Always write to GITHUB_OUTPUT to ensure outputs are set
-              print(f"Debug: Writing to GITHUB_OUTPUT: HAS_REGRESSIONS={str(has_regressions_val).lower()}, REGRESSION_COUNT={regression_count_val}")
-              with open(os.environ.get("GITHUB_OUTPUT", "/dev/null"), "a") as f:
-                  f.write(f"HAS_REGRESSIONS={str(has_regressions_val).lower()}\n")
-                  f.write(f"REGRESSION_COUNT={regression_count_val}\n")
-              print(f"Debug: Completed in {time.time() - start_time:.2f} seconds")
-              # Exit with 0 to not fail the step if script itself had an error but we set default outputs
-              sys.exit(0)
-
+          # Always write output
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"HAS_REGRESSIONS={str(has_regressions).lower()}\n")
+              f.write(f"REGRESSION_COUNT={regression_count}\n")
           EOF
 
-          # Run the regression detection script with 60 second timeout
-          timeout 60 python3 check_regressions.py '${{ needs.test-target-branch.outputs.passing_tests }}' '${{ needs.test-source-branch.outputs.failing_tests }}'
-          # The python script sets HAS_REGRESSIONS and REGRESSION_COUNT as step outputs via GITHUB_OUTPUT
-
-          # First, check if the file exists
-          if [ -f regression_details.txt ]; then
-            echo "Regression details file exists, checking content"
+          # FORCE CHECK: If regression_details.txt exists, it means there are regressions
+          # This is a fallback in case the Python script output is inconsistent
+          if [ -f "regression_details.txt" ]; then
+            echo "Regression details file exists - FORCING HAS_REGRESSIONS=true"
+            echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
             
-            # Simple count of regression lines (numbered list items)
-            LINE_COUNT=$(grep -c "^[0-9]" regression_details.txt || echo "0")
-            echo "Found $LINE_COUNT regression lines in file"
+            # Count the regression lines (lines starting with a number followed by a period)
+            COUNT=$(grep -c "^[0-9]\+\." regression_details.txt || echo "0")
+            echo "Found $COUNT regression entries in the file"
+            echo "REGRESSION_COUNT=$COUNT" >> $GITHUB_OUTPUT
             
-            # If file exists with regressions, make sure our output is set correctly
-            if [ "$LINE_COUNT" -gt "0" ]; then
-              echo "HAS_REGRESSIONS=true" >> $GITHUB_OUTPUT
-              echo "REGRESSION_COUNT=$LINE_COUNT" >> $GITHUB_OUTPUT
-              echo "Test regressions found in file. Setting HAS_REGRESSIONS=true with $LINE_COUNT regressions."
-            fi
+            # Display the contents for log examination
+            echo "Regression details:"
+            cat regression_details.txt
+          else
+            echo "No regression details file found - no regressions detected"
           fi
 
           if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
@@ -1019,16 +985,18 @@ jobs:
           echo "message_body_out=${MESSAGE}" >> $GITHUB_OUTPUT
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
 
-  # This job sends the notification using the alert-discord workflow
+  # This job sends the notification using the alert-discord workflow if webhook is available
   notify-discord:
     name: Send Discord Notification
     needs: [prepare-notification]
-    if: needs.prepare-notification.outputs.should_notify == 'true'
-    # Use the reusable workflow correctly
+    # Always run this job, but the job will check internally if notification should be sent
+    # This avoids issues with conditional access to secrets
+    if: always()
     uses: ./.github/workflows/alert-discord.yml
     with:
       message_body: ${{ needs.prepare-notification.outputs.message_body }}
       ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
       artifact_paths: ${{ needs.prepare-notification.outputs.artifact_path }}
+      should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
