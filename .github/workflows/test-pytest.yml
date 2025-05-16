@@ -895,14 +895,18 @@ jobs:
       ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
       artifact_path: ${{ steps.construct_notification.outputs.artifact_path_out }}
       should_notify: "true"
+      webhook_available_for_alert: ${{ steps.check_webhook_availability.outputs.webhook_available }}
 
     steps:
       - name: Check for Discord Webhook URL
+        id: check_webhook_availability
         run: |
           if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
             echo "::notice::DISCORD_WEBHOOK_URL secret is not set. Discord notifications will likely be skipped by the alert workflow if it relies on this secret."
+            echo "webhook_available=false" >> $GITHUB_OUTPUT
           else
             echo "::debug::DISCORD_WEBHOOK_URL secret is present."
+            echo "webhook_available=true" >> $GITHUB_OUTPUT
           fi
       - name: Download regression details (if any)
         id: download_regressions
@@ -1008,7 +1012,10 @@ jobs:
   notify-discord:
     name: Send Discord Notification
     needs: [prepare-notification]
-    if: always()
+    if: |
+      always() &&
+      needs.prepare-notification.outputs.should_notify == 'true' &&
+      needs.prepare-notification.outputs.webhook_available_for_alert == 'true'
     uses: ./.github/workflows/alert-discord.yml
     with:
       message_body: ${{ needs.prepare-notification.outputs.message_body }}
