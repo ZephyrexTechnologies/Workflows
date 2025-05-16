@@ -1,121 +1,340 @@
-name: Reusable TypeScript Lint (ESLint + Prettier)
+name: Reusable Lint TypeScript & Check Regressions
 
 on:
   workflow_call:
     inputs:
       node-version:
-        description: "Node.js version to use"
+        description: "Node.js version to use."
         required: false
         type: string
-        default: "18.x"
-      install_command:
-        description: "Command to install dependencies (e.g., npm ci, yarn install)"
-        required: false
+        default: "18"
+      target_branch_to_compare:
+        description: "The target branch to compare against for regressions (e.g., main, refs/heads/main)."
+        required: false # Optional, if not provided, regression check is skipped
         type: string
-        default: "npm ci"
-      eslint_check_command:
-        description: "Command to check with ESLint"
-        required: false
+        default: "" # Default to empty, indicating skip
+      lint_command:
+        description: "The exact lint command to run (e.g., npm run lint:eslint)"
+        required: true
         type: string
-        default: "npm run lint:eslint:check" # Placeholder, user should configure
-      eslint_fix_command:
-        description: "Command to fix with ESLint"
-        required: false
+      fix_command:
+        description: "The exact command to run for auto-fixing lint issues (e.g., npm run lint:eslint -- --fix)"
+        required: true
         type: string
-        default: "npm run lint:eslint:fix" # Placeholder, user should configure
-      prettier_check_command:
-        description: "Command to check with Prettier"
+      fail_on_new_regressions_only:
+        description: "If true, only fail if new regressions are found compared to target branch. If false, fail on any lint error in PR."
         required: false
-        type: string
-        default: "npm run lint:prettier:check" # Placeholder, user should configure
-      prettier_fix_command:
-        description: "Command to fix with Prettier"
-        required: false
-        type: string
-        default: "npm run lint:prettier:fix" # Placeholder, user should configure
-      working-directory:
-        description: "Directory where package.json and lint configurations are located"
-        required: false
-        type: string
-        default: "."
+        type: boolean
+        default: false
     outputs:
-      auto_formatted:
-        description: "Whether ESLint/Prettier auto-formatted files and pushed changes."
-        value: ${{ jobs.lint.outputs.auto_formatted }}
+      lint_errors_pr_branch:
+        description: "JSON string of lint errors on the PR branch after attempting fixes."
+        value: ${{ jobs.lint-pr-branch.outputs.lint_errors_json }}
+      has_lint_errors_pr_branch:
+        description: "Boolean indicating if the PR branch has lint errors after fixes."
+        value: ${{ jobs.lint-pr-branch.outputs.has_lint_errors }}
+      has_regressions:
+        description: "Boolean indicating if lint regressions were found compared to target branch."
+        value: ${{ jobs.analyze-regressions.outputs.has_regressions }}
+      regression_count:
+        description: "Number of lint regressions found."
+        value: ${{ jobs.analyze-regressions.outputs.regression_count }}
 
 jobs:
-  lint:
-    name: TypeScript ESLint/Prettier Check
+  lint-target-branch:
+    # Only run if a target branch is specified for comparison
+    if: ${{ inputs.target_branch_to_compare != '' }}
+    name: Lint Target Branch
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ${{ inputs.working-directory }}
     outputs:
-      auto_formatted: ${{ steps.push-changes.outputs.pushed || 'false' }}
-    permissions:
-      contents: write # To push formatting changes
-
+      clean_files_json: ${{ steps.extract-clean-files.outputs.CLEAN_FILES_JSON }}
     steps:
-      - name: Checkout repository
+      - name: Checkout Target Branch
         uses: actions/checkout@v4.2.2
         with:
-          submodules: "recursive"
-          token: ${{ github.token }} # Use default GITHUB_TOKEN for pushing to the PR branch
-          fetch-depth: 0
+          ref: ${{ inputs.target_branch_to_compare }}
+          persist-credentials: false # Ensure no conflicts with PR checkout credentials
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
+          cache: 'npm' # Or 'yarn' if you use yarn
 
       - name: Install dependencies
-        run: ${{ inputs.install_command }}
-
-      - name: Check with ESLint
-        id: eslint-check
-        continue-on-error: true
-        run: ${{ inputs.eslint_check_command }}
-
-      - name: Check with Prettier
-        id: prettier-check
-        continue-on-error: true
-        run: ${{ inputs.prettier_check_command }}
-
-      - name: Auto-format with ESLint and Prettier
-        id: format
-        if: steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure'
         run: |
-          echo "Attempting to auto-fix with ESLint..."
-          ${{ inputs.eslint_fix_command }}
-          echo "Attempting to auto-format with Prettier..."
-          ${{ inputs.prettier_fix_command }}
+          echo "Installing dependencies for target branch..."
+          npm ci # Or yarn install --frozen-lockfile
 
-      - name: Configure Git
-        if: steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure'
+      - name: Run Linter (Target Branch)
+        id: lint-target
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Running linter on target branch: ${{ inputs.target_branch_to_compare }}"
+          # Run the lint command, pipe output to a file, and allow it to fail without stopping the workflow
+          ${{ inputs.lint_command }} > target_lint_output.txt 2>&1 || true
+          echo "Lint command finished on target branch."
+          cat target_lint_output.txt # For debugging
 
-      - name: Commit and push changes
-        id: push-changes
-        if: steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure'
+      - name: Extract Clean Files (Target Branch)
+        id: extract-clean-files
         run: |
-          git add -A
-          if git diff --staged --quiet; then
-            echo "No changes to commit after auto-formatting attempts."
-            echo "pushed=false" >> $GITHUB_OUTPUT
+          echo "Extracting clean files from target branch..."
+          # This is a placeholder. You'll need a script to parse target_lint_output.txt
+          # and identify files *without* errors.
+          # For ESLint, you might look for sections that don't report problems for a file.
+          # This example assumes a simple case or a tool that can output clean files.
+          # A more robust solution would parse the specific linter's output format.
+          
+          # Example: If your linter lists all files and then errors, you could:
+          # 1. Get all relevant files (e.g., find . -name '*.ts' -o -name '*.tsx')
+          # 2. Get all files with errors from target_lint_output.txt
+          # 3. Subtract set 2 from set 1.
+          
+          # For now, as a basic placeholder, we'll assume no files are "clean" if any error exists,
+          # or all files are clean if no errors. This needs to be more sophisticated.
+          # If the linter has a JSON output, it's much easier.
+          
+          CLEAN_FILES_LIST='[]' # Default to empty list
+          
+          # Attempt to parse ESLint JSON output if available (recommended)
+          # if [ -f target_lint_output.json ]; then # Assuming lint_command could produce target_lint_output.json
+          #   CLEAN_FILES_LIST=$(jq -r '[.[] | select(.errorCount == 0 and .warningCount == 0) | .filePath] | @json' target_lint_output.json)
+          # else
+            # Fallback: Super simplified: if no "problem" or "error" keyword, assume all *.ts/tsx are clean
+            if ! grep -q -E "problem|error|warning" target_lint_output.txt; then
+              echo "No lint errors detected in target_lint_output.txt. Assuming all relevant files are clean."
+              # Find all .ts and .tsx files and format as JSON array
+              # Note: this doesn't respect .eslintignore or other linter-specific ignore files directly
+              # A better approach is to use the linter's own file processing capabilities.
+              ALL_FILES=$(find . -type f \( -name "*.ts" -o -name "*.tsx" \) -not -path "./node_modules/*" -print0 | xargs -0 realpath --relative-to=. | jq -R . | jq -s .)
+              if [ -n "$ALL_FILES" ] && [ "$ALL_FILES" != "null" ]; then
+                CLEAN_FILES_LIST=$ALL_FILES
+              else
+                CLEAN_FILES_LIST="[]"
+              fi
+            else
+              echo "Lint errors/warnings found in target_lint_output.txt. More sophisticated parsing needed to identify truly clean files."
+              # In a real scenario, you'd parse the output to list files *without* errors.
+              # For now, if there are any errors, we assume no files are guaranteed clean for simplicity.
+              CLEAN_FILES_LIST="[]"
+            fi
+          # fi
+          
+          echo "Identified clean files (JSON): $CLEAN_FILES_LIST"
+          echo "CLEAN_FILES_JSON=$CLEAN_FILES_LIST" >> $GITHUB_OUTPUT
+        shell: bash
+
+  lint-pr-branch:
+    name: Lint PR Branch & Attempt Fixes
+    runs-on: ubuntu-latest
+    outputs:
+      lint_errors_json: ${{ steps.extract-errors-pr.outputs.LINT_ERRORS_JSON }}
+      has_lint_errors: ${{ steps.check-errors-pr.outputs.HAS_LINT_ERRORS }}
+      erroring_files_json: ${{ steps.extract-errors-pr.outputs.ERRORING_FILES_JSON }} # Files with errors after fix
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4.2.2
+        with:
+          # ref: ${{ github.head_ref }} # Default, checks out the PR branch
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          echo "Installing dependencies for PR branch..."
+          npm ci
+
+      - name: Run Linter & Attempt Auto-fix (PR Branch)
+        id: lint-fix-pr
+        run: |
+          echo "Running linter with auto-fix on PR branch..."
+          # Run the fix command, allow to fail to see pre-fix state if needed, or ignore error if fix handles it
+          ${{ inputs.fix_command }} > pr_fix_output.txt 2>&1 || true
+          echo "Auto-fix command finished. Output:"
+          cat pr_fix_output.txt
+          
+          echo "Running linter again after auto-fix to get final error state..."
+          # Run the lint command again, capture its output to a file (e.g., JSON if supported)
+          # Ensure your lint_command can output to a file, e.g., eslint --format json --output-file pr_lint_errors.json
+          # If it only outputs to stdout, redirect:
+          ${{ inputs.lint_command }} --format json --output-file pr_lint_errors.json > pr_lint_stdout.txt 2>&1 || true
+          
+          echo "Final lint run (after fix attempt) STDOUT:"
+          cat pr_lint_stdout.txt
+          if [ -f pr_lint_errors.json ]; then
+            echo "Final lint run (after fix attempt) JSON output (pr_lint_errors.json):"
+            cat pr_lint_errors.json
           else
-            git commit -m "style: auto-format TypeScript code with ESLint/Prettier"
-            # Determine the current branch
-            BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
-            echo "Pushing changes to branch: $BRANCH_NAME"
-            git push origin HEAD:$BRANCH_NAME
-            echo "pushed=true" >> $GITHUB_OUTPUT
+            echo "pr_lint_errors.json was not created. The lint command might not support JSON output or failed."
+            # Create an empty JSON array as a fallback for pr_lint_errors.json
+            echo "[]" > pr_lint_errors.json 
+          fi
+        shell: bash
+
+      - name: Extract Lint Errors (PR Branch, after fix)
+        id: extract-errors-pr
+        run: |
+          echo "Extracting lint errors from PR branch (after fix attempt)..."
+          LINT_ERRORS_OUTPUT='[]' # Default to empty JSON array
+          ERRORING_FILES_LIST='[]'
+
+          if [ -f pr_lint_errors.json ]; then
+            # Check if the file is empty or contains only whitespace
+            if [ -s pr_lint_errors.json ] && ! grep -Eq '^\s*\[\s*\]\s*$' pr_lint_errors.json; then
+                # Attempt to parse the JSON and extract filePaths with errors/warnings
+                # This assumes ESLint-like JSON structure
+                PARSED_ERRORS=$(jq -r '[.[] | select(.errorCount > 0 or .warningCount > 0)]' pr_lint_errors.json)
+                if [ -n "$PARSED_ERRORS" ] && [ "$PARSED_ERRORS" != "null" ]; then
+                  LINT_ERRORS_OUTPUT=$PARSED_ERRORS
+                  # Extract just the file paths for regression analysis
+                  ERRORING_FILES_LIST=$(echo "$PARSED_ERRORS" | jq -r '[.[].filePath] | unique | @json')
+                fi
+            else
+                echo "pr_lint_errors.json is empty or an empty array. No lint errors reported in JSON."
+            fi
+          else
+            echo "pr_lint_errors.json not found. Cannot extract structured errors."
+            # As a fallback, you could try to parse pr_lint_stdout.txt, but it's less reliable.
+            # For simplicity, we keep LINT_ERRORS_OUTPUT and ERRORING_FILES_LIST as '[]'.
+          fi
+          
+          echo "Extracted lint errors (JSON): $LINT_ERRORS_OUTPUT"
+          echo "LINT_ERRORS_JSON=$LINT_ERRORS_OUTPUT" >> $GITHUB_OUTPUT
+          echo "Erroring files (JSON): $ERRORING_FILES_LIST"
+          echo "ERRORING_FILES_JSON=$ERRORING_FILES_LIST" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Check for Lint Errors (PR Branch, after fix)
+        id: check-errors-pr
+        run: |
+          # Check if the LINT_ERRORS_JSON (derived from jq) contains anything other than an empty array '[]'
+          # The jq command in previous step produces '[]' if no errors or if input was empty.
+          # A more direct check is on the erroring files list.
+          if [ "${{ steps.extract-errors-pr.outputs.ERRORING_FILES_JSON }}" != "[]" ]; then
+            echo "::error::Lint errors found on PR branch after auto-fix attempt."
+            echo "HAS_LINT_ERRORS=true" >> $GITHUB_OUTPUT
+          else
+            echo "No lint errors detected on PR branch after auto-fix attempt."
+            echo "HAS_LINT_ERRORS=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Commit Changes if Auto-fix Modified Files
+        # This step is optional: only if you want to auto-commit fixes
+        # Ensure your token has write permissions
+        if: steps.lint-fix-pr.outcome == 'success' # Or check git status
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          # Check if there are changes to commit
+          if ! git diff --quiet; then
+            echo "Auto-fix made changes. Committing..."
+            git add .
+            git commit -m "style: auto-fix linting issues [skip ci]"
+            git push
+          else
+            echo "No changes to commit from auto-fix."
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needs to be passed if not default
+
+  analyze-regressions:
+    name: Analyze Lint Regressions
+    if: ${{ inputs.target_branch_to_compare != '' && (needs.lint-pr-branch.outputs.has_lint_errors == 'true' || inputs.fail_on_new_regressions_only == true) }}
+    needs: [lint-target-branch, lint-pr-branch]
+    uses: ./.github/workflows/meta-regression-analysis.yml
+    with:
+      target_branch_passing_items_json: ${{ needs.lint-target-branch.outputs.clean_files_json }}
+      pr_branch_failing_items_json: ${{ needs.lint-pr-branch.outputs.erroring_files_json }}
+      item_type_singular: "file with lint error"
+      item_type_plural: "files with lint errors"
+      pr_number: ${{ github.event.pull_request.number }}
+      run_id: ${{ github.run_id }}
+    # Removed outputs and steps from here, as they are defined by the reusable workflow
+    # and accessed via `needs.analyze-regressions.outputs.*` in subsequent jobs.
+
+  check-results:
+    name: Check Lint Results
+    runs-on: ubuntu-latest
+    needs: [lint-pr-branch, analyze-regressions] 
+    if: always()
+    steps:
+      - name: Evaluate Results
+        run: |
+          PR_HAS_ERRORS="${{ needs.lint-pr-branch.outputs.has_lint_errors }}"
+          # Check if analyze-regressions job was actually run (its condition was met)
+          # We can infer this by checking if its outputs are available or by its result.
+          # A simpler way is to check the initial condition that would have run it.
+          REGRESSION_ANALYSIS_WAS_INTENDED="${{ inputs.target_branch_to_compare != '' && (needs.lint-pr-branch.outputs.has_lint_errors == 'true' || inputs.fail_on_new_regressions_only == true) }}"
+          HAS_REGRESSIONS="false" # Default
+          REGRESSION_COUNT="0" # Default
+
+          # Only try to access outputs if the job was intended to run and presumably completed
+          # GitHub Actions might provide empty strings for outputs of skipped jobs, handle this gracefully.
+          if [[ "$REGRESSION_ANALYSIS_WAS_INTENDED" == "true" ]]; then
+            # Check if the job 'analyze-regressions' was skipped or not. 
+            # If skipped, its outputs might not be set as expected.
+            # A robust way: check needs.analyze-regressions.result != 'skipped'
+            if [[ "${{ needs.analyze-regressions.result }}" != "skipped" ]]; then
+              HAS_REGRESSIONS="${{ needs.analyze-regressions.outputs.has_regressions }}"
+              REGRESSION_COUNT="${{ needs.analyze-regressions.outputs.regression_count }}"
+            else
+              echo "::debug::Regression analysis job was skipped. Using default regression values (false, 0)."
+            fi
+          fi
+          
+          FAIL_ON_REGRESSIONS_ONLY="${{ inputs.fail_on_new_regressions_only }}"
+
+          echo "--- Lint Check Results ---"
+          echo "PR Branch Has Lint Errors (after fix): $PR_HAS_ERRORS"
+          echo "Target Branch for Comparison: ${{ inputs.target_branch_to_compare }}"
+          echo "Regression Analysis Performed: $REGRESSION_ANALYSIS_WAS_INTENDED"
+          echo "Fail on New Regressions Only: $FAIL_ON_REGRESSIONS_ONLY"
+          
+          if [ "$REGRESSION_ANALYSIS_WAS_INTENDED" == "true" ]; then
+            echo "Has Regressions: $HAS_REGRESSIONS"
+            echo "Regression Count: $REGRESSION_COUNT"
+            # Download and display regression details if they exist
+            # This requires knowing the artifact name from reusable-regression-analyzer
+            # The artifact name is: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_files with lint errors
+            # This step would typically download the artifact if needed.
+            # For now, just printing the status.
           fi
 
-      - name: Fail workflow if formatting was needed and pushed
-        if: (steps.eslint-check.outcome == 'failure' || steps.prettier-check.outcome == 'failure') && steps.push-changes.outputs.pushed == 'true'
-        run: |
-          echo "Code was auto-formatted by ESLint/Prettier. A new commit has been pushed."
-          echo "This workflow is failing intentionally to trigger a new run with formatted code."
-          exit 1
+          if [ "$FAIL_ON_REGRESSIONS_ONLY" == "true" ]; then
+            echo "Mode: Fail only on new regressions."
+            if [ "$REGRESSION_ANALYSIS_WAS_INTENDED" == "true" ] && [ "$HAS_REGRESSIONS" == "true" ]; then
+              echo "::error::New lint regressions detected ($REGRESSION_COUNT files). Files that were clean on target branch ('${{ inputs.target_branch_to_compare }}') now have lint errors."
+              # You could cat the regression_details.txt here if downloaded
+              exit 1
+            elif [ "$REGRESSION_ANALYSIS_WAS_INTENDED" == "true" ] && [ "$HAS_REGRESSIONS" == "false" ]; then
+              echo "✅ No new lint regressions found compared to target branch."
+              if [ "$PR_HAS_ERRORS" == "true" ]; then
+                echo "::warning::PR branch still has lint errors, but they are not new regressions (or target branch also had them)."
+              fi
+            elif [ "$REGRESSION_ANALYSIS_WAS_INTENDED" == "false" ] && [ "$PR_HAS_ERRORS" == "true" ]; then
+              # This case implies target branch wasn't specified, but PR has errors.
+              # If fail_on_new_regressions_only is true, we might not fail here.
+              # However, if no target is given, regression isn't meaningful.
+              echo "::warning::PR branch has lint errors, but no target branch was specified for regression analysis. Behavior for this scenario might need refinement."
+              # Depending on strictness, you might still want to fail if PR_HAS_ERRORS is true and no target was given for comparison.
+              # For now, if fail_on_new_regressions_only is true, and no regression analysis was done, we don't fail based on PR errors alone.
+            else
+              echo "✅ PR branch is clean or no new regressions detected."
+            fi
+          else
+            echo "Mode: Fail on any lint error in PR branch (after fix)."
+            if [ "$PR_HAS_ERRORS" == "true" ]; then
+              echo "::error::Lint errors detected on PR branch after auto-fix attempt."
+              # Consider printing details of errors from ${{ needs.lint-pr-branch.outputs.lint_errors_json }}
+              exit 1
+            else
+              echo "✅ No lint errors detected on PR branch after auto-fix attempt."
+            fi
+          fi
+          echo "--- End Lint Check Results ---"

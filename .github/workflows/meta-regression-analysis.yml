@@ -1,0 +1,144 @@
+name: Meta Regression Analysis
+
+on:
+  workflow_call:
+    inputs:
+      target_branch_passing_items_json:
+        description: "JSON string array of items considered 'passing' or 'clean' in the target branch."
+        required: true
+        type: string
+      pr_branch_failing_items_json:
+        description: "JSON string array of items considered 'failing' or 'with issues' in the PR branch."
+        required: true
+        type: string
+      item_type_singular:
+        description: "Singular name for the items being compared (e.g., test, file)."
+        required: false
+        type: string
+        default: "item"
+      item_type_plural:
+        description: "Plural name for the items being compared (e.g., tests, files)."
+        required: false
+        type: string
+        default: "items"
+      pr_number:
+        description: "Pull request number for artifact naming."
+        required: false
+        type: string
+      run_id:
+        description: "Current run ID for artifact naming if PR number is not available."
+        required: true
+        type: string
+
+    outputs:
+      has_regressions:
+        description: "Boolean indicating if regressions were found."
+        value: ${{ jobs.analyze.outputs.HAS_REGRESSIONS }}
+      regression_count:
+        description: "Number of regressions found."
+        value: ${{ jobs.analyze.outputs.REGRESSION_COUNT }}
+      regression_details_file_name: # Output the file name for clarity
+        description: "Name of the artifact file containing regression details."
+        value: "regression_details.txt"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    outputs:
+      HAS_REGRESSIONS: ${{ steps.check-regressions-script.outputs.HAS_REGRESSIONS }}
+      REGRESSION_COUNT: ${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
+    steps:
+      - name: Run regression analysis script
+        id: check-regressions-script
+        env:
+          TARGET_PASSING_JSON_ENV: "${{ inputs.target_branch_passing_items_json }}"
+          PR_FAILING_JSON_ENV: "${{ inputs.pr_branch_failing_items_json }}"
+          ITEM_TYPE_SINGULAR_ENV: "${{ inputs.item_type_singular }}"
+          ITEM_TYPE_PLURAL_ENV: "${{ inputs.item_type_plural }}"
+        run: |
+          set -x
+          echo "Running regression analysis..."
+
+          python3 - <<'EOF'
+          import json
+          import os
+          import sys
+
+          target_passing_str = os.environ.get('TARGET_PASSING_JSON_ENV', '[]')
+          pr_failing_str = os.environ.get('PR_FAILING_JSON_ENV', '[]')
+          item_type_s = os.environ.get('ITEM_TYPE_SINGULAR_ENV', 'item')
+          item_type_p = os.environ.get('ITEM_TYPE_PLURAL_ENV', 'items')
+
+          regression_items_list = []
+          has_regressions_output = "false"
+          regression_count_output = 0
+
+          try:
+              def load_json_list(json_str, description):
+                  parsed_list = []
+                  if not json_str or json_str.lower() == 'null':
+                      print(f"Debug: {description} JSON string is null or empty, defaulting to empty list.")
+                      return []
+                  try:
+                      parsed_list = json.loads(json_str)
+                  except json.JSONDecodeError as e:
+                      print(f"::warning::JSONDecodeError for {description}: {e}. Input string: {json_str[:200]}...")
+                      return []
+                  if not isinstance(parsed_list, list):
+                      print(f"::warning::{description} did not parse to a list, got {type(parsed_list)}. Defaulting to empty list. Value: {str(parsed_list)[:200]}")
+                      return []
+                  return parsed_list
+
+              target_passing = load_json_list(target_passing_str, "Target passing items")
+              pr_failing = load_json_list(pr_failing_str, "PR failing items")
+              
+              print(f"Parsed {len(target_passing)} passing/clean {item_type_p} from target branch.")
+              print(f"Parsed {len(pr_failing)} failing/issue {item_type_p} from PR branch.")
+              
+              target_passing_set = set(target_passing)
+              pr_failing_set = set(pr_failing)
+              
+              regression_items_list = sorted(list(target_passing_set.intersection(pr_failing_set)))
+              
+              if regression_items_list:
+                  print(f"Found {len(regression_items_list)} regression(s)!")
+                  has_regressions_output = "true"
+                  regression_count_output = len(regression_items_list)
+                  with open("regression_details.txt", "w") as f:
+                      f.write(f"Found {len(regression_items_list)} {item_type_p} that were passing/clean in the target branch but are now failing/have issues in the PR branch:\n\n")
+                      for idx, item in enumerate(regression_items_list, 1):
+                          f.write(f"{idx}. {item}\n")
+                  print("Regression details written to regression_details.txt")
+              else:
+                  print(f"No new regressions found for {item_type_p}.")
+                  with open("regression_details.txt", "w") as f:
+                      f.write(f"No new regressions detected for {item_type_p} (items that were passing/clean in target and are now failing/with issues in PR).\n")
+
+          except Exception as e:
+              print(f"::error::Error in regression analysis script: {e}", file=sys.stderr)
+              import traceback
+              print(traceback.format_exc(), file=sys.stderr)
+              with open("regression_details.txt", "w") as f:
+                  f.write(f"An error occurred during regression analysis: {e}\n")
+
+          github_output_file = os.environ.get('GITHUB_OUTPUT')
+          if github_output_file:
+              with open(github_output_file, 'a') as f_out:
+                  f_out.write(f'HAS_REGRESSIONS={has_regressions_output}\n')
+                  f_out.write(f'REGRESSION_COUNT={regression_count_output}\n')
+              print(f"Output HAS_REGRESSIONS={has_regressions_output} to GITHUB_OUTPUT")
+              print(f"Output REGRESSION_COUNT={regression_count_output} to GITHUB_OUTPUT")
+          else:
+              print("::warning::GITHUB_OUTPUT environment variable not set.")
+          EOF
+
+          echo "Regression analysis script completed."
+          echo "Generated regression_details.txt content:"
+          cat regression_details.txt
+
+      - name: Upload regression details artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression_details_pr_${{ inputs.pr_number || inputs.run_id }}_${{ inputs.item_type_plural }}
+          path: regression_details.txt
+          retention-days: 7 

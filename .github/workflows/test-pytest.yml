@@ -594,8 +594,8 @@ jobs:
     needs: [test-source-branch, test-target-branch]
     runs-on: ubuntu-latest
     outputs:
-      has_regressions: ${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}
-      regression_count: ${{ steps.check-regressions.outputs.REGRESSION_COUNT }}
+      has_regressions: ${{ needs.perform-regression-analysis.outputs.has_regressions }}
+      regression_count: ${{ needs.perform-regression-analysis.outputs.regression_count }}
 
     steps:
       - name: Install bc
@@ -683,9 +683,9 @@ jobs:
                   print(f"Found {len(regression_tests)} regression(s)!")
                   
                   with open("regression_details.txt", "w") as f:
-                      f.write(f"Found {len(regression_tests)} tests that were passing in target branch but now failing in PR branch:\n\n")
+                      f.write(f"Found {len(regression_tests)} tests that were passing in target branch but now failing in PR branch:\\n\\n")
                       for idx, test in enumerate(sorted(regression_tests), 1):
-                          f.write(f"{idx}. {test}\n")
+                          f.write(f"{idx}. {test}\\n")
                   print("Regression details written to file")
               else:
                   print("No regressions found")
@@ -706,7 +706,7 @@ jobs:
             echo "Regression details file exists"
             
             # Count regression lines (lines starting with a number and period)
-            COUNT=$(grep -c "^[0-9]\+\." regression_details.txt || echo "0")
+            COUNT=$(grep -c "^[0-9]\\+\\." regression_details.txt || echo "0")
             echo "Found $COUNT regression items in file"
             
             # Always set outputs when file exists
@@ -743,7 +743,7 @@ jobs:
         if: steps.check-regressions.outputs.HAS_REGRESSIONS == 'true' && steps.check-regressions.outputs.REGRESSION_COUNT > 0
         uses: actions/upload-artifact@v4
         with:
-          name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}
+          name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
           path: regression_details.txt
           retention-days: 1
 
@@ -786,8 +786,8 @@ jobs:
           echo "::debug::TARGET_PERCENTAGE=$TARGET_PERCENTAGE"
           echo "::debug::PR_TOTAL=$PR_TOTAL"
           echo "::debug::TARGET_TOTAL=$TARGET_TOTAL"
-          echo "::debug::HAS_REGRESSIONS=${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}"
-          echo "::debug::REGRESSION_COUNT=${{ steps.check-regressions.outputs.REGRESSION_COUNT }}"
+          echo "::debug::HAS_REGRESSIONS=${{ needs.perform-regression-analysis.outputs.has_regressions }}"
+          echo "::debug::REGRESSION_COUNT=${{ needs.perform-regression-analysis.outputs.regression_count }}"
 
           # Handle case where target has no tests
           if [[ "$TARGET_TOTAL" == "0" ]]; then
@@ -803,14 +803,23 @@ jobs:
           fi
 
           # Fail if any tests passed in target branch but now fail in PR branch
-          if [[ "${{ steps.check-regressions.outputs.HAS_REGRESSIONS }}" == "true" ]]; then
+          if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]]; then
             echo "❌ PR branch has test regressions from target branch"
-            echo "  - ${{ steps.check-regressions.outputs.REGRESSION_COUNT }} tests that were passing in target branch are now failing"
+            echo "  - ${{ needs.perform-regression-analysis.outputs.regression_count }} tests that were passing in target branch are now failing"
+            # Attempt to download the artifact from the reusable workflow
+            # Note: This requires the artifact to be available.
+            # Consider passing artifact name/path if needed, or rely on a consistent name.
+            echo "Attempting to find regression details..."
+            # The reusable workflow uploads 'regression_details.txt' with a dynamic name.
+            # We need to know that name or download all artifacts from the called workflow.
+            # For now, we'll assume it's directly available if has_regressions is true,
+            # as the reusable workflow is expected to create it.
+            # A more robust solution would involve downloading the specific artifact by its name.
             if [ -f regression_details.txt ]; then # Check if file exists (it should from previous step)
                 echo "Failing tests (regressions) list:"
                 cat regression_details.txt
             else
-                echo "::warning::Regression details file (regression_details.txt) not found in Compare test results step."
+                echo "::warning::Regression details file (regression_details.txt) not found in Compare test results step. It might be available as an artifact from the 'perform-regression-analysis' job."
             fi
             exit 1
           fi
@@ -856,16 +865,31 @@ jobs:
             exit 1
           fi
 
+  perform-regression-analysis:
+    needs: [test-source-branch, test-target-branch]
+    uses: ./.github/workflows/meta-regression-analysis.yml
+    with:
+      target_branch_passing_items_json: ${{ needs.test-target-branch.outputs.passing_tests }}
+      pr_branch_failing_items_json: ${{ needs.test-source-branch.outputs.failing_tests }}
+      item_type_singular: "test"
+      item_type_plural: "tests"
+      pr_number: ${{ github.event.pull_request.number }}
+      run_id: ${{ github.run_id }}
+    # Secrets are not needed for this reusable workflow currently
+    # secrets: inherit 
+
   # Conditionally run notification job only if needed
   prepare-notification:
     name: Prepare Notification Data
-    needs: [lint, test-source-branch, test-target-branch, compare-results]
+    needs: [lint, test-source-branch, test-target-branch, compare-results, perform-regression-analysis]
+    # Notify on collection errors, no tests found, compare result failure, or if regressions are detected
     if: |
       always() &&
       (
         needs.test-source-branch.outputs.collection_errors == 'true' ||
         needs.test-source-branch.outputs.no_tests_found == 'true' ||
-        needs.compare-results.result == 'failure'
+        needs.compare-results.result == 'failure' ||
+        needs.perform-regression-analysis.outputs.has_regressions == 'true'
       )
     runs-on: ubuntu-latest
     outputs:
@@ -877,10 +901,11 @@ jobs:
     steps:
       - name: Download regression details (if any)
         id: download_regressions
-        if: needs.compare-results.outputs.has_regressions == 'true' && needs.compare-results.outputs.regression_count > 0
+        if: needs.perform-regression-analysis.outputs.has_regressions == 'true' && needs.perform-regression-analysis.outputs.regression_count > 0
         uses: actions/download-artifact@v4
         with:
-          name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}
+          # The artifact name from reusable-regression-analyzer.yml
+          name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
           path: . # Download to current directory
         continue-on-error: true
 
@@ -895,8 +920,8 @@ jobs:
           PR_NO_TESTS_FOUND: ${{ needs.test-source-branch.outputs.no_tests_found }}
           PR_ERROR_TYPE: ${{ needs.test-source-branch.outputs.error_type }}
           PR_ERROR_DETAILS_TRUNCATED: ${{ needs.test-source-branch.outputs.error_details }}
-          HAS_REGRESSIONS: ${{ needs.compare-results.outputs.has_regressions }}
-          REGRESSION_COUNT: ${{ needs.compare-results.outputs.regression_count }}
+          HAS_REGRESSIONS: ${{ needs.perform-regression-analysis.outputs.has_regressions }}
+          REGRESSION_COUNT: ${{ needs.perform-regression-analysis.outputs.regression_count }}
           PR_TOTAL_TESTS: ${{ needs.test-source-branch.outputs.total }}
           PR_PASSED_TESTS: ${{ needs.test-source-branch.outputs.passed }}
           PR_PERCENTAGE: ${{ needs.test-source-branch.outputs.percentage }}

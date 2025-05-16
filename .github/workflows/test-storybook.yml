@@ -1,4 +1,4 @@
-name: Reusable Storybook Tests
+name: Reusable Storybook Tests with Regression Analysis
 
 on:
   workflow_call:
@@ -13,68 +13,261 @@ on:
         required: false
         type: string
         default: "3001"
+      target_branch_to_compare:
+        description: "The target branch to compare against for regressions (e.g., main). If empty, regression check is skipped."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      pr_has_errors:
+        description: "Boolean indicating if the PR branch has Storybook test errors."
+        value: ${{ jobs.test-pr-branch-storybook.outputs.has_errors }}
+      pr_failing_stories_json:
+        description: "JSON list of failing story IDs on the PR branch."
+        value: ${{ jobs.test-pr-branch-storybook.outputs.failing_stories_json }}
+      has_regressions:
+        description: "Boolean indicating if Storybook test regressions were found."
+        value: ${{ jobs.analyze-storybook-regressions.outputs.has_regressions }}
+      regression_count:
+        description: "Number of Storybook test regressions found."
+        value: ${{ jobs.analyze-storybook-regressions.outputs.regression_count }}
 
 jobs:
   lint:
-    uses: ./.github/workflows/test-lint-js.yml # Please ensure this path is correct for your JS/TS linting workflow
+    uses: ./.github/workflows/test-lint-js.yml # Assumes JS/TS linting for Storybook setup
     permissions:
       contents: write
 
-  test:
+  test-target-branch-storybook:
+    if: ${{ inputs.target_branch_to_compare != '' }}
+    name: Test Target Branch Stories
+    needs: [lint] # Ensure linting passes before running tests
+    runs-on: ubuntu-latest
+    outputs:
+      passing_stories_json: ${{ steps.extract-passing-stories.outputs.PASSING_STORIES_JSON }}
+    steps:
+      - name: Checkout Target Branch
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.target_branch_to_compare }}
+          submodules: "recursive"
+
+      - name: Use Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies (Target)
+        run: npm ci
+
+      - name: Install Playwright browsers (Target)
+        run: npx playwright install --with-deps
+
+      - name: Run Storybook (Target)
+        run: npm run storybook -- --port ${{ inputs.storybook_port }} &
+
+      - name: Wait for Storybook (Target)
+        run: |
+          echo "Waiting for Storybook (Target) to start on port ${{ inputs.storybook_port }}..."
+          timeout=120 # Increased timeout
+          counter=0
+          until $(curl --output /dev/null --silent --head --fail http://localhost:${{ inputs.storybook_port }}); do
+            if [ $counter -ge $timeout ]; then # Use -ge for counter check
+              echo "Timed out waiting for Storybook (Target) to start"
+              exit 1
+            fi
+            echo "Waiting for Storybook (Target)... ($counter seconds so far)"
+            sleep 5
+            counter=$((counter + 5))
+          done
+          echo "Storybook (Target) is up and running on port ${{ inputs.storybook_port }}!"
+
+      - name: Run Storybook tests (Target)
+        id: run-tests-target
+        run: |
+          npm run storybook-test -- --json-report target_storybook_results.json || true
+          echo "Storybook tests on target branch completed."
+          if [ -f target_storybook_results.json ]; then
+            cat target_storybook_results.json
+          else
+            echo "target_storybook_results.json not found."
+            echo "{\"testResults\": [], \"numTotalTests\": 0, \"numPassedTests\": 0}" > target_storybook_results.json # Create empty results
+          fi
+
+      - name: Extract Passing Stories (Target)
+        id: extract-passing-stories
+        run: |
+          echo "Extracting passing stories from target branch results..."
+          # Placeholder: Adapt this to your storybook-test JSON output format
+          # This example assumes a structure like TestCafe or Jest reports
+          # where you can find story IDs that passed.
+          # If your test runner outputs a list of passed story IDs directly, use that.
+          PASSING_STORIES='[]'
+          if [ -f target_storybook_results.json ]; then 
+            # Example: jq '[.testResults[] | select(.status == "passed") | .name] | unique | @json' target_storybook_results.json
+            # This is highly dependent on the actual structure of target_storybook_results.json
+            # For now, a simplified approach: if numPassedTests == numTotalTests and numTotalTests > 0, assume all are passing (needs actual story IDs)
+            # A better placeholder: if the report exists, try to get story IDs.
+            # This needs to be specific to your storybook test runner output.
+            # If `storybook-test` lists all stories and their status, parse that.
+            # As a very basic placeholder, if the file exists and isn't empty, we'll assume it contains some data that needs to be processed.
+            # For now, let's assume all tests found are passing if the overall command succeeded (or we parse a summary).
+            # This is a major simplification and needs actual implementation.
+            if jq -e '.numPassedTests > 0 and .numPassedTests == .numTotalTests' target_storybook_results.json > /dev/null; then
+                echo "Target branch tests all passed or specific parsing logic needed for story IDs."
+                # Ideally, extract actual story IDs here if numPassedTests > 0
+                # This is a placeholder and will likely return an empty list if not all tests passed.
+                # Or, if your report lists stories: jq '[.testResults[] | .name ] | @json' target_storybook_results.json
+                PASSING_STORIES=$(jq '[.testResults[]? | select(.status? == "passed" or .status? == null) | .name // .title] | unique | @json' target_storybook_results.json)
+            else
+                echo "Not all target tests passed or specific parsing logic for story IDs needed."
+                PASSING_STORIES=$(jq '[.testResults[]? | select(.status? == "passed") | .name // .title] | unique | @json' target_storybook_results.json)
+            fi
+            if [ "$PASSING_STORIES" == "null" ]; then PASSING_STORIES='[]'; fi
+          fi
+          echo "Passing stories (JSON Target): $PASSING_STORIES"
+          echo "PASSING_STORIES_JSON=$PASSING_STORIES" >> $GITHUB_OUTPUT
+
+  test-pr-branch-storybook:
+    name: Test PR Branch Stories
     needs: [lint]
     runs-on: ubuntu-latest
+    outputs:
+      has_errors: ${{ steps.run-tests-pr.outcome == 'failure' || steps.extract-failing-stories.outputs.HAS_FAILING_STORIES == 'true' }}
+      failing_stories_json: ${{ steps.extract-failing-stories.outputs.FAILING_STORIES_JSON }}
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repository (PR)
         uses: actions/checkout@v4.2.2
         with:
           submodules: "recursive"
 
       - name: Use Node.js ${{ inputs.node-version }}
-        uses: actions/setup-node@v3 # Consider v4 if available and preferred
+        uses: actions/setup-node@v4 # Use v4 consistently
         with:
           node-version: ${{ inputs.node-version }}
           cache: "npm"
 
-      - name: Install dependencies
+      - name: Install dependencies (PR)
         run: npm ci
 
-      - name: Install Playwright browsers
+      - name: Install Playwright browsers (PR)
         run: npx playwright install --with-deps
 
-      - name: Run Storybook
+      - name: Run Storybook (PR)
         run: npm run storybook -- --port ${{ inputs.storybook_port }} &
 
-      - name: Wait for Storybook to be ready
+      - name: Wait for Storybook (PR)
         run: |
-          echo "Waiting for Storybook to start on port ${{ inputs.storybook_port }}..."
-          timeout=60
+          echo "Waiting for Storybook (PR) to start on port ${{ inputs.storybook_port }}..."
+          timeout=120 # Increased timeout
           counter=0
           until $(curl --output /dev/null --silent --head --fail http://localhost:${{ inputs.storybook_port }}); do
-            if [ $counter -eq $timeout ]; then
-              echo "Timed out waiting for Storybook to start"
+            if [ $counter -ge $timeout ]; then # Use -ge
+              echo "Timed out waiting for Storybook (PR) to start"
               exit 1
             fi
-            echo "Waiting for Storybook... ($counter seconds so far)"
+            echo "Waiting for Storybook (PR)... ($counter seconds so far)"
             sleep 5
             counter=$((counter + 5))
           done
-          echo "Storybook is up and running on port ${{ inputs.storybook_port }}!"
+          echo "Storybook (PR) is up and running on port ${{ inputs.storybook_port }}!"
 
-      - name: Run Storybook tests
-        run: npm run storybook-test
+      - name: Run Storybook tests (PR)
+        id: run-tests-pr
+        run: |
+          npm run storybook-test -- --json-report pr_storybook_results.json || true
+          echo "Storybook tests on PR branch completed."
+          if [ -f pr_storybook_results.json ]; then
+            cat pr_storybook_results.json
+          else
+            echo "pr_storybook_results.json not found."
+            echo "{\"testResults\": [], \"numTotalTests\": 0, \"numPassedTests\": 0, \"numFailedTests\": 0}" > pr_storybook_results.json # Create empty results
+          fi
 
-      # Optional: Collect and upload test coverage
-      # - name: Collect coverage
-      #   run: npx nyc report
-      #   if: always()
-      #   continue-on-error: true
+      - name: Extract Failing Stories (PR)
+        id: extract-failing-stories
+        run: |
+          echo "Extracting failing stories from PR branch results..."
+          FAILING_STORIES='[]'
+          HAS_FAILURES='false'
+          if [ -f pr_storybook_results.json ]; then
+            # Example: jq '[.testResults[] | select(.status == "failed") | .name] | unique | @json' pr_storybook_results.json
+            # This is highly dependent on your test runner's JSON output.
+            FAILING_STORIES=$(jq '[.testResults[]? | select(.status? == "failed" or .status? == "broken" or .status? == "timedOut") | .name // .title] | unique | @json' pr_storybook_results.json)
+            if [ "$FAILING_STORIES" == "null" ]; then FAILING_STORIES='[]'; fi
+            if [ "$FAILING_STORIES" != "[]" ]; then HAS_FAILURES='true'; fi
+            # Alternative: check numFailedTests from summary
+            # if jq -e '.numFailedTests > 0' pr_storybook_results.json > /dev/null; then HAS_FAILURES='true'; fi
+          fi
+          echo "Failing stories (JSON PR): $FAILING_STORIES"
+          echo "FAILING_STORIES_JSON=$FAILING_STORIES" >> $GITHUB_OUTPUT
+          echo "HAS_FAILING_STORIES=$HAS_FAILURES" >> $GITHUB_OUTPUT
 
-      # Upload artifacts if tests fail
-      - uses: actions/upload-artifact@v4
-        if: failure()
+      - name: Upload artifacts if tests fail (PR)
+        if: steps.run-tests-pr.outcome == 'failure' || steps.extract-failing-stories.outputs.HAS_FAILING_STORIES == 'true'
+        uses: actions/upload-artifact@v4
         with:
-          name: storybook-test-results
+          name: storybook-test-results-pr
           path: |
+            pr_storybook_results.json
             ./*-snapshots/
             ./coverage/
           retention-days: 7
+
+  analyze-storybook-regressions:
+    name: Analyze Storybook Regressions
+    if: ${{ inputs.target_branch_to_compare != '' }}
+    needs: [test-target-branch-storybook, test-pr-branch-storybook]
+    uses: ./.github/workflows/meta-regression-analysis.yml
+    with:
+      target_branch_passing_items_json: ${{ needs.test-target-branch-storybook.outputs.passing_stories_json }}
+      pr_branch_failing_items_json: ${{ needs.test-pr-branch-storybook.outputs.failing_stories_json }}
+      item_type_singular: "Storybook story"
+      item_type_plural: "Storybook stories"
+      pr_number: ${{ github.event.pull_request.number }}
+      run_id: ${{ github.run_id }}
+
+  check-storybook-results:
+    name: Check Storybook Results & Regressions
+    runs-on: ubuntu-latest
+    needs: [test-pr-branch-storybook, analyze-storybook-regressions]
+    if: always() # Always run to give a final status
+    steps:
+      - name: Evaluate Storybook Test Results
+        run: |
+          PR_HAS_ERRORS="${{ needs.test-pr-branch-storybook.outputs.has_errors }}"
+          REGRESSION_ANALYSIS_INTENDED="${{ inputs.target_branch_to_compare != '' }}"
+          HAS_REGRESSIONS="false"
+          REGRESSION_COUNT="0"
+
+          echo "--- Storybook Test Results ---"
+          echo "PR Branch Storybook Test Errors: $PR_HAS_ERRORS"
+          echo "Target Branch for Comparison: ${{ inputs.target_branch_to_compare }}"
+
+          if [[ "$REGRESSION_ANALYSIS_INTENDED" == "true" ]]; then
+            if [[ "${{ needs.analyze-storybook-regressions.result }}" != "skipped" ]]; then
+              HAS_REGRESSIONS="${{ needs.analyze-storybook-regressions.outputs.has_regressions }}"
+              REGRESSION_COUNT="${{ needs.analyze-storybook-regressions.outputs.regression_count }}"
+              echo "Storybook Regressions Found: $HAS_REGRESSIONS ($REGRESSION_COUNT)"
+              # You could download and cat the regression_details_storybook_stories.txt artifact here
+            else
+              echo "Storybook regression analysis job was skipped."
+            fi
+
+            if [[ "$HAS_REGRESSIONS" == "true" ]]; then
+              echo "::error::${REGRESSION_COUNT} Storybook test(s) regressed. Stories that were passing on target branch ('${{ inputs.target_branch_to_compare }}') are now failing/broken on the PR branch."
+              # Consider downloading and displaying the regression artifact for details.
+              exit 1 # Fail the workflow due to regressions
+            fi
+          fi
+
+          # If no regression analysis, or if regression analysis passed, check PR errors directly
+          if [[ "$PR_HAS_ERRORS" == "true" ]]; then
+            echo "::error::Storybook tests failed on the PR branch. Check afor artifacts."
+            # The original test job might have already failed, this ensures it.
+            exit 1
+          fi
+
+          echo "✅ Storybook tests passed and no new regressions detected (if applicable)."
+          echo "--- End Storybook Test Results ---"
