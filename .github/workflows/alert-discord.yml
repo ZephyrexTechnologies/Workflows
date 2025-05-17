@@ -75,9 +75,9 @@ jobs:
               # Fallback or exit if jq is critical and not found. For now, will allow message sending without pings if map is used.
           fi
 
-          # Process message_body to convert literal '\\n' (backslash-n) to actual newlines
-          # This helps if the input message_body contains \\n instead of actual newlines.
-          PROCESSED_MESSAGE_BODY=$(echo "$MESSAGE_BODY_INPUT" | sed 's/\\\\n/\\n/g')
+          # Process message_body to convert literal '\\n' (double backslash-n) to actual newlines.
+          # This should handle cases where the input message_body contains literal \\n from GitHub Actions outputs.
+          PROCESSED_MESSAGE_BODY=$(printf '%b' "$MESSAGE_BODY_INPUT")
 
           # 1. Construct user pings prefix based on DISCORD_USER_MAP and PING_USER_IDS_INPUT
           PINGS_PREFIX=""
@@ -118,7 +118,7 @@ jobs:
           # Escape only backslashes and double quotes. Newlines in MESSAGE_BODY_INPUT
           # will be preserved as actual newlines in the JSON content, which Discord handles.
           CONTENT_TO_SEND="${PINGS_PREFIX}${PROCESSED_MESSAGE_BODY}"
-          echo "--- CONTENT_TO_SEND --- "
+          echo "--- CONTENT_TO_SEND (after printf processing) --- "
           echo "$CONTENT_TO_SEND"
           echo "--- END CONTENT_TO_SEND ---"
 

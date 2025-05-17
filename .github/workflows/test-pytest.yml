@@ -962,25 +962,20 @@ jobs:
           DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
         run: |
           MESSAGE_LINES=() # Use an array to build message lines
-          PING_USERS=""
+          PING_KEYS_OUTPUT="" # Will be comma-separated GitHub logins
           ARTIFACT_PATH_OUTPUT=""
 
-          # 1. Determine Pings
+          # 1. Determine Pings - Collect GitHub Logins to pass to alert-discord.yml
           if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && command -v jq &> /dev/null; then
-            ASSIGNEE_LOGINS=$(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty' | tr '\\n' ' ')
-            if [ -n "$ASSIGNEE_LOGINS" ]; then
-              for login in $ASSIGNEE_LOGINS; do
-                DISCORD_ID=$(echo "$USER_MAP_JSON" | jq -r --arg L "$login" '.[$L] // empty')
-                if [ -n "$DISCORD_ID" ]; then
-                  PING_USERS="$PING_USERS$DISCORD_ID,"
-                fi
-              done
-              PING_USERS=${PING_USERS%,} # Remove trailing comma
+            ASSIGNEE_LOGINS_ARRAY=($(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty'))
+            if [ ${#ASSIGNEE_LOGINS_ARRAY[@]} -gt 0 ]; then
+              PING_KEYS_OUTPUT=$(IFS=,; echo "${ASSIGNEE_LOGINS_ARRAY[*]}")
             fi
+            echo "::debug::Collected GitHub logins for pinging: $PING_KEYS_OUTPUT"
           elif [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && ! command -v jq &> /dev/null; then
-            echo "::warning::jq is not available. Cannot map GitHub users to Discord IDs for pings."
+            echo "::warning::jq is not available. Cannot determine GitHub users for pings."
           fi
-          echo "ping_user_ids_out=$PING_USERS" >> $GITHUB_OUTPUT
+          echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
 
           # Store branch names in variables with proper quoting
           PR_BRANCH="${PR_BRANCH_NAME:-unknown}"
