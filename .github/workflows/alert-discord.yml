@@ -124,11 +124,15 @@ jobs:
           echo "$CONTENT_TO_SEND"
           echo "--- END CONTENT_TO_SEND ---"
 
-          # JSON Escaping: only backslashes and double quotes need escaping now.
-          # Literal \n from input should remain as \n for the JSON string.
-          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
+          # JSON Escaping: 
+          # 1. Escape backslashes (\\ -> \\\\)
+          # 2. Escape double quotes (\" -> \\\" )
+          # 3. Convert literal newlines to \\n sequence
+          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | \
+              sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' | \
+              awk 'NR > 1 { printf("\\\\n") } { printf("%s", $0) }')
 
-          echo "--- ESCAPED_JSON_CONTENT (after final sed) --- "
+          echo "--- ESCAPED_JSON_CONTENT (after sed & awk) --- "
           echo "$ESCAPED_JSON_CONTENT"
           echo "--- END ESCAPED_JSON_CONTENT ---"
 
