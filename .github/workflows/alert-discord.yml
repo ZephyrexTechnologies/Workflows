@@ -64,6 +64,12 @@ jobs:
           set -e # Exit immediately if a command exits with a non-zero status.
           set -x # Print each command before execution for robust debugging
 
+          echo "--- RAW MESSAGE_BODY_INPUT --- "
+          echo "$MESSAGE_BODY_INPUT"
+          echo "--- RAW MESSAGE_BODY_INPUT (with cat -A) --- "
+          echo "$MESSAGE_BODY_INPUT" | cat -A
+          echo "--- END RAW MESSAGE_BODY_INPUT ---"
+
           if [ -z "$WEBHOOK_URL" ]; then
             echo "::error::DISCORD_WEBHOOK_URL secret is not set or empty."
             exit 1
@@ -78,6 +84,12 @@ jobs:
           # Process message_body to convert literal '\\n' (double backslash-n) to actual newlines.
           # This should handle cases where the input message_body contains literal \\n from GitHub Actions outputs.
           PROCESSED_MESSAGE_BODY=$(printf '%b' "$MESSAGE_BODY_INPUT")
+
+          echo "--- PROCESSED_MESSAGE_BODY (after printf %b) --- "
+          echo "$PROCESSED_MESSAGE_BODY"
+          echo "--- PROCESSED_MESSAGE_BODY (with cat -A) --- "
+          echo "$PROCESSED_MESSAGE_BODY" | cat -A
+          echo "--- END PROCESSED_MESSAGE_BODY ---"
 
           # 1. Construct user pings prefix based on DISCORD_USER_MAP and PING_USER_IDS_INPUT
           PINGS_PREFIX=""

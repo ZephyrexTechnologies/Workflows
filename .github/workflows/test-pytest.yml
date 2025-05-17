@@ -971,9 +971,12 @@ jobs:
             if [ ${#ASSIGNEE_LOGINS_ARRAY[@]} -gt 0 ]; then
               PING_KEYS_OUTPUT=$(IFS=,; echo "${ASSIGNEE_LOGINS_ARRAY[*]}")
             fi
-            echo "::debug::Collected GitHub logins for pinging: $PING_KEYS_OUTPUT"
+            # Make this a standard echo for better visibility
+            echo "Ping Keys Output (GitHub Logins from test-pytest.yml): [$PING_KEYS_OUTPUT]"
           elif [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && ! command -v jq &> /dev/null; then
             echo "::warning::jq is not available. Cannot determine GitHub users for pings."
+          else
+            echo "Debug: No user map JSON or jq not found, or no assignees. PING_KEYS_OUTPUT will be empty."
           fi
           echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
 
@@ -981,66 +984,23 @@ jobs:
           PR_BRANCH="${PR_BRANCH_NAME:-unknown}"
           TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
 
-          # 2. Construct Message Body
-          MESSAGE_LINES+=("**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
-          MESSAGE_LINES+=("Target Branch: \`${TARGET_BRANCH}\`")
-          MESSAGE_LINES+=("[View Workflow Run](${ACTION_RUN_URL})")
-          MESSAGE_LINES+=("") # Blank line
+          # 2. Construct Message Body - TEMPORARILY SIMPLIFIED FOR NEWLINE DEBUGGING
+          MESSAGE_LINES+=("Simple Line 1 from test-pytest")
+          MESSAGE_LINES+=("Simple Line 2 from test-pytest")
+          MESSAGE_LINES+=("Simple Line 3 with PING_KEYS_OUTPUT: [$PING_KEYS_OUTPUT]") # Include for checking
 
-          if [ "$PR_COLLECTION_ERRORS" == "true" ]; then
-            MESSAGE_LINES+=("**Error Type:** Test Collection Error (${PR_ERROR_TYPE})")
-            MESSAGE_LINES+=("**Details:** \`${PR_ERROR_DETAILS_TRUNCATED:0:1000}\`")
-          elif [ "$PR_NO_TESTS_FOUND" == "true" ]; then
-            MESSAGE_LINES+=("**Error Type:** No Tests Found in PR branch.")
-          elif [ "$COMPARE_RESULT" == "failure" ]; then
-            MESSAGE_LINES+=("**Test Comparison Summary:**")
-            MESSAGE_LINES+=("- PR [\`${PR_BRANCH}\`]: Passed ${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} (${PR_PERCENTAGE}%%)")
-            MESSAGE_LINES+=("- Target [\`${TARGET_BRANCH}\`]: Passed ${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} (${TARGET_PERCENTAGE}%%)")
+          # Original complex message construction commented out for now
+          # MESSAGE_LINES+=("**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
+          # ... (rest of original message lines) ...
 
-            if [ "$HAS_REGRESSIONS" == "true" ] && [ "$REGRESSION_COUNT" -gt 0 ]; then
-              MESSAGE_LINES+=("- **Regressions Found: ${REGRESSION_COUNT}**")
-              if [ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ] && [ -s "$REGRESSION_FILE_PATH" ]; then
-                if [ "$REGRESSION_COUNT" -le 10 ]; then
-                  MESSAGE_LINES+=("  Regressed Tests:")
-                  # regression_details.txt format from meta-regression-analysis.yml:
-                  # Line 1: Header text
-                  # Line 2: Blank line
-                  # Line 3 onwards: "idx. item_name"
-                  mapfile -t ITEMS_FROM_FILE < <(tail -n +3 "$REGRESSION_FILE_PATH" | sed -E 's/^[0-9]+\\.\\s*//')
-                  for item in "${ITEMS_FROM_FILE[@]}"; do
-                    MESSAGE_LINES+=("  - $item")
-                  done
-                  ARTIFACT_PATH_OUTPUT="" # No artifact attached for inline list
-                else # More than 10 regressions
-                  MESSAGE_LINES+=("- _See attached ${REGRESSION_FILE_PATH##*/} for the list of ${REGRESSION_COUNT} regressed tests._")
-                  ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
-                fi
-              else
-                MESSAGE_LINES+=("- _Could not retrieve or read regression details artifact ($REGRESSION_FILE_PATH). Download outcome: $DOWNLOAD_REGRESSIONS_OUTCOME._")
-                ARTIFACT_PATH_OUTPUT="" # Ensure no artifact path if download/read failed
-              fi
-            elif [ "$HAS_REGRESSIONS" == "false" ] && [ "$REGRESSION_COUNT" == "0" ]; then
-              # This case is when compare-results failed, but it wasn't due to new regressions.
-              MESSAGE_LINES+=("- No new test regressions from target branch were detected, but other comparison metrics failed.")
-            else
-               # This handles unexpected regression status or count when compare-results failed.
-               MESSAGE_LINES+=("- Comparison failed. Regression Status: HAS_REGRESSIONS=${HAS_REGRESSIONS}, Count=${REGRESSION_COUNT}. Check logs for details.")
-            fi
-          else
-             # This 'else' corresponds to COMPARE_RESULT not being 'failure'.
-             # However, the job's 'if' condition includes other failure reasons like collection errors.
-             # This specific message might be for a general catch-all if other conditions weren't met but job still runs.
-             MESSAGE_LINES+=("**Overall Result:** One or more checks triggering notification failed. Lint: ${LINT_RESULT}, Source Test: ${SOURCE_TEST_RESULT}, Target Test: ${TARGET_TEST_RESULT}, Compare: ${COMPARE_RESULT}, Regressions: ${HAS_REGRESSIONS}. Please check workflow logs.")
-          fi
-
-          FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
-          # Remove the very last automatically added newline by printf if the array was not empty
+          FINAL_MESSAGE_BODY=$(printf "%s\n" "${MESSAGE_LINES[@]}")
           if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
-            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
+            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\n}"
           fi
 
-          echo "::debug::Final message body prepared:"
+          echo "::debug::Final message body prepared in test-pytest.yml:"
           echo "$FINAL_MESSAGE_BODY"
+          echo "$FINAL_MESSAGE_BODY" | cat -A # Show with non-printables
 
           echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT
