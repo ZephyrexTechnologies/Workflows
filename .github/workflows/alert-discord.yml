@@ -124,26 +124,16 @@ jobs:
           echo "$CONTENT_TO_SEND"
           echo "--- END CONTENT_TO_SEND ---"
 
-          # JSON Escaping: 
-          # 1. Escape backslashes (\\ -> \\\\)
-          # 2. Escape double quotes (\" -> \\\" )
-          # 3. Convert literal newlines to \\n sequence
-          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | \
-              sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' | \
-              awk 'NR > 1 { printf("\\\\n") } { printf("%s", $0) }')
+          # JSON Escaping and Construction using jq:
+          # The CONTENT_TO_SEND variable should have actual newlines where desired.
+          # jq will handle converting them to \n and other necessary JSON string escaping.
+          JSON_PAYLOAD_PART=$(jq -nc --arg content "$CONTENT_TO_SEND" '{content: $content}')
 
-          echo "--- ESCAPED_JSON_CONTENT (after sed & awk) --- "
-          echo "$ESCAPED_JSON_CONTENT"
-          echo "--- END ESCAPED_JSON_CONTENT ---"
-
-          # 3. Construct the core JSON payload part for the 'payload_json' field or -d
-          JSON_PAYLOAD_PART="{\"content\": \"$ESCAPED_JSON_CONTENT\"}"
-
-          echo "--- JSON_PAYLOAD_PART --- "
+          echo "--- JSON_PAYLOAD_PART (from jq) --- "
           echo "$JSON_PAYLOAD_PART"
           echo "--- END JSON_PAYLOAD_PART ---"
 
-          # 4. Prepare curl arguments array
+          # 3. Prepare curl arguments array
           CURL_ARGS=("-sS" "-X" "POST") # -sS for silent operation but show errors
 
           # 5. Check for artifacts and build form data if needed

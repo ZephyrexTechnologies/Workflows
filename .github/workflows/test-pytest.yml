@@ -965,6 +965,9 @@ jobs:
           PING_KEYS_OUTPUT="" # Will be comma-separated GitHub logins
           ARTIFACT_PATH_OUTPUT=""
 
+          echo "Debug: Raw GH_ASSIGNEES_JSON value: [$GH_ASSIGNEES_JSON]"
+          echo "Debug: Raw USER_MAP_JSON value: [$USER_MAP_JSON]"
+
           # 1. Determine Pings - Collect GitHub Logins to pass to alert-discord.yml
           if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && command -v jq &> /dev/null; then
             ASSIGNEE_LOGINS_ARRAY=($(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty'))
@@ -993,14 +996,14 @@ jobs:
           # MESSAGE_LINES+=("**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
           # ... (rest of original message lines) ...
 
-          # Construct with literal \n for GitHub output
-          FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}") # Use %s\\n to create literal \n
+          # Construct with actual newlines
+          FINAL_MESSAGE_BODY=$(printf "%s\n" "${MESSAGE_LINES[@]}")
           if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
-            # Remove the very last literal \n (2 characters)
-            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
+            # Remove the very last actual newline
+            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\n}"
           fi
 
-          echo "::debug::Final message body prepared in test-pytest.yml (with literal \\n):"
+          echo "::debug::Final message body prepared in test-pytest.yml (with actual newlines):"
           echo "$FINAL_MESSAGE_BODY"
           echo "$FINAL_MESSAGE_BODY" | cat -A # Show with non-printables
 
