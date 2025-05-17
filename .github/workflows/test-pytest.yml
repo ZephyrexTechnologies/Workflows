@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: "3.10"
+      ping_latest_committer:
+        description: "If true, the latest committer on the PR will be added to the ping list."
+        required: false
+        type: boolean
+        default: false
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."
@@ -960,6 +965,7 @@ jobs:
           USER_MAP_JSON: ${{ secrets.DISCORD_USER_MAP || '{}' }}
           REGRESSION_FILE_PATH: "regression_details.txt"
           DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
+          INPUT_PING_LATEST_COMMITTER: ${{ inputs.ping_latest_committer }}
         run: |
           MESSAGE_LINES=() # Use an array to build message lines
           PING_KEYS_OUTPUT="" # Will be comma-separated GitHub logins
@@ -969,18 +975,104 @@ jobs:
           echo "Debug: Raw USER_MAP_JSON value: [$USER_MAP_JSON]"
 
           # 1. Determine Pings - Collect GitHub Logins to pass to alert-discord.yml
+          # Initialize PING_KEYS_OUTPUT
+          PING_KEYS_OUTPUT=""
+
+          # Add assignees to PING_KEYS_OUTPUT
           if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && command -v jq &> /dev/null; then
             ASSIGNEE_LOGINS_ARRAY=($(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty'))
-            if [ ${#ASSIGNEE_LOGINS_ARRAY[@]} -gt 0 ]; then
-              PING_KEYS_OUTPUT=$(IFS=,; echo "${ASSIGNEE_LOGINS_ARRAY[*]}")
+            echo "Debug: GH_ASSIGNEES_JSON received: $GH_ASSIGNEES_JSON"
+            echo "Debug: Extracted ASSIGNEE_LOGINS_ARRAY: (${ASSIGNEE_LOGINS_ARRAY[*]})"
+            echo "Debug: Count of assignees extracted: ${#ASSIGNEE_LOGINS_ARRAY[@]}"
+
+            MAPPED_ASSIGNEE_COUNT=0
+            TEMP_PING_KEYS=()
+
+            for assignee_login in "${ASSIGNEE_LOGINS_ARRAY[@]}"; do
+              if [ -z "$assignee_login" ]; then
+                echo "Debug: Skipping empty assignee login."
+                continue
+              fi
+              echo "Debug: Processing assignee for ping: '$assignee_login'"
+              # Check if this assignee_login exists as a key in USER_MAP_JSON
+              # The jq query '.\"$assignee_login\"' will attempt to access the key. If it exists, it returns the value, otherwise null.
+              # We use -e to set exit code 0 if last output was not null, 1 if null or not found.
+              if echo "$USER_MAP_JSON" | jq -e --arg K "$assignee_login" '.[$K]' > /dev/null; then
+                echo "Debug: Assignee '$assignee_login' FOUND in USER_MAP_JSON."
+                TEMP_PING_KEYS+=("$assignee_login")
+                MAPPED_ASSIGNEE_COUNT=$((MAPPED_ASSIGNEE_COUNT + 1))
+              else
+                echo "Debug: Assignee '$assignee_login' NOT FOUND in USER_MAP_JSON."
+              fi
+            done
+
+            echo "Debug: Total assignees found in USER_MAP_JSON and added to pings: $MAPPED_ASSIGNEE_COUNT"
+
+            if [ ${#TEMP_PING_KEYS[@]} -gt 0 ]; then
+              PING_KEYS_OUTPUT=$(IFS=,; echo "${TEMP_PING_KEYS[*]}")
+              echo "Debug: Initial PING_KEYS_OUTPUT from assignees: [$PING_KEYS_OUTPUT]"
+            else
+              echo "Debug: No assignees found or GH_ASSIGNEES_JSON was empty, or no assignees were found in USER_MAP_JSON."
             fi
-            # Make this a standard echo for better visibility
-            echo "Ping Keys Output (GitHub Logins from test-pytest.yml): [$PING_KEYS_OUTPUT]"
           elif [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && ! command -v jq &> /dev/null; then
-            echo "::warning::jq is not available. Cannot determine GitHub users for pings."
+            echo "::warning::jq is not available. Cannot determine GitHub users (assignees) for pings."
           else
-            echo "Debug: No user map JSON or jq not found, or no assignees. PING_KEYS_OUTPUT will be empty."
+            echo "Debug: No user map JSON or jq not found. PING_KEYS_OUTPUT (from assignees) will be empty."
           fi
+
+          # Add latest committer if INPUT_PING_LATEST_COMMITTER is true
+          if [[ "$INPUT_PING_LATEST_COMMITTER" == "true" ]]; then
+            echo "Debug: INPUT_PING_LATEST_COMMITTER is true. Attempting to fetch latest committer for PR #${PR_NUMBER}."
+            if command -v gh &> /dev/null && [ -n "$PR_NUMBER" ]; then
+              LATEST_COMMITTER_LOGIN_RAW=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].author.login' 2>/dev/null || echo "")
+              
+              if [ -n "$LATEST_COMMITTER_LOGIN_RAW" ] && [ "$LATEST_COMMITTER_LOGIN_RAW" != "null" ]; then
+                # Apply bot filter (e.g., names ending in [bot] or -bot)
+                LATEST_COMMITTER_LOGIN=$(echo "$LATEST_COMMITTER_LOGIN_RAW" | grep -v -E -i '(\[bot\]$|-bot$)' || echo "")
+                
+                if [ -n "$LATEST_COMMITTER_LOGIN" ]; then
+                  echo "Debug: Latest committer identified: $LATEST_COMMITTER_LOGIN"
+                  
+                  # Check if this committer is already in PING_KEYS_OUTPUT
+                  ALREADY_IN_LIST=0
+                  if [ -n "$PING_KEYS_OUTPUT" ]; then # Only check if PING_KEYS_OUTPUT is not empty
+                    IFS=',' read -ra PING_ARRAY <<< "$PING_KEYS_OUTPUT"
+                    for key in "${PING_ARRAY[@]}"; do
+                      if [[ "$key" == "$LATEST_COMMITTER_LOGIN" ]]; then
+                        ALREADY_IN_LIST=1
+                        break
+                      fi
+                    done
+                  fi
+                  
+                  if [[ "$ALREADY_IN_LIST" -eq 0 ]]; then
+                    if [ -z "$PING_KEYS_OUTPUT" ]; then
+                      PING_KEYS_OUTPUT="$LATEST_COMMITTER_LOGIN"
+                    else
+                      PING_KEYS_OUTPUT="$PING_KEYS_OUTPUT,$LATEST_COMMITTER_LOGIN"
+                    fi
+                    echo "Debug: Added latest committer '$LATEST_COMMITTER_LOGIN' to PING_KEYS_OUTPUT. New list: [$PING_KEYS_OUTPUT]"
+                  else
+                    echo "Debug: Latest committer '$LATEST_COMMITTER_LOGIN' is already in PING_KEYS_OUTPUT (likely an assignee)."
+                  fi
+                else
+                  echo "Debug: Latest committer login '$LATEST_COMMITTER_LOGIN_RAW' was filtered out (likely a bot or pattern match) or empty after filter."
+                fi
+              else
+                echo "Debug: No latest committer login found for PR #$PR_NUMBER from gh command, or login was null."
+              fi
+            else
+              if ! command -v gh &> /dev/null; then
+                echo "::warning::gh command not available. Cannot fetch latest committer."
+              fi
+              if [ -z "$PR_NUMBER" ]; then
+                echo "::warning::PR_NUMBER is not set (event might not be a pull_request). Cannot fetch latest committer."
+              fi
+            fi
+          fi
+
+          # Make this a standard echo for better visibility of the final list
+          echo "Final Ping Keys Output (GitHub Logins from test-pytest.yml): [$PING_KEYS_OUTPUT]"
           echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
 
           # Store branch names in variables with proper quoting
@@ -988,19 +1080,93 @@ jobs:
           TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
 
           # 2. Construct Message Body - TEMPORARILY SIMPLIFIED FOR NEWLINE DEBUGGING
-          MESSAGE_LINES+=("Simple Line 1 from test-pytest")
-          MESSAGE_LINES+=("Simple Line 2 from test-pytest")
-          MESSAGE_LINES+=("Simple Line 3 with PING_KEYS_OUTPUT: [$PING_KEYS_OUTPUT]") # Include for checking
+          MESSAGE_LINES+=("**Pytest Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
+          MESSAGE_LINES+=("Branch: [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) against [\`${TARGET_BRANCH}\`](${REPO_URL}/tree/${TARGET_BRANCH})")
+          MESSAGE_LINES+=("---")
 
-          # Original complex message construction commented out for now
-          # MESSAGE_LINES+=("**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
-          # ... (rest of original message lines) ...
+          # Job Status Summary
+          MESSAGE_LINES+=("**Job Status:**")
+          LINT_STATUS="Success"
+          if [[ "$LINT_RESULT" == "failure" ]]; then LINT_STATUS="Failed"; elif [[ "$LINT_RESULT" == "skipped" ]]; then LINT_STATUS="Skipped"; fi
+          MESSAGE_LINES+=("- Linting: $LINT_STATUS")
+
+          SOURCE_TEST_STATUS="Success"
+          if [[ "$SOURCE_TEST_RESULT" == "failure" ]]; then SOURCE_TEST_STATUS="Failed"; elif [[ "$SOURCE_TEST_RESULT" == "skipped" ]]; then SOURCE_TEST_STATUS="Skipped"; fi
+          MESSAGE_LINES+=("- PR Branch Tests (\`${PR_BRANCH}\`): $SOURCE_TEST_STATUS")
+
+          TARGET_TEST_STATUS="Success"
+          if [[ "$TARGET_TEST_RESULT" == "failure" ]]; then TARGET_TEST_STATUS="Failed"; elif [[ "$TARGET_TEST_RESULT" == "skipped" ]]; then TARGET_TEST_STATUS="Skipped"; fi
+          MESSAGE_LINES+=("- Target Branch Tests (\`${TARGET_BRANCH}\`): $TARGET_TEST_STATUS")
+
+          COMPARE_STATUS="Success"
+          if [[ "$COMPARE_RESULT" == "failure" ]]; then COMPARE_STATUS="Failed"; elif [[ "$COMPARE_RESULT" == "skipped" ]]; then COMPARE_STATUS="Skipped"; fi
+          MESSAGE_LINES+=("- Comparison & Regression: $COMPARE_STATUS")
+          MESSAGE_LINES+=("---")
+
+          # Test Discovery Issues in PR Branch
+          if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
+            MESSAGE_LINES+=("**:red_circle: ERROR: Test Discovery Failed in PR Branch (\`${PR_BRANCH}\`)**")
+            MESSAGE_LINES+=("  - Type: \`${PR_ERROR_TYPE}\`")
+            MESSAGE_LINES+=("  - Details: \`\`\`${PR_ERROR_DETAILS_TRUNCATED}\`\`\`")
+            MESSAGE_LINES+=("  - This usually indicates import errors or syntax issues preventing tests from being collected.")
+          elif [[ "$PR_NO_TESTS_FOUND" == "true" ]]; then
+            MESSAGE_LINES+=("**:warning: WARNING: No Tests Found in PR Branch (\`${PR_BRANCH}\`)**")
+            MESSAGE_LINES+=("  - Pytest did not discover any test files matching its patterns.")
+            MESSAGE_LINES+=("  - Ensure your test files are correctly named (e.g., \`test_*.py\` or \`*_test.py\`) and located.")
+          fi
+
+          # Regression Analysis Summary
+          if [[ "$HAS_REGRESSIONS" == "true" ]]; then
+            MESSAGE_LINES+=("**:red_circle: REGRESSIONS DETECTED**")
+            MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
+            if [[ "$REGRESSION_COUNT" -gt 0 && "$REGRESSION_COUNT" -le 10 ]]; then
+              if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+                MESSAGE_LINES+=("  - **Failed Tests (Regressions):**")
+                # Read up to 10 lines from the file, skipping the header
+                # Use awk to ensure only regression lines (starting with number and dot) are processed
+                REGRESSION_LIST=$(awk '/^[0-9]+\./ {sub(/^[0-9]+\. /, "- "); print; count++} count>=10 {exit}' "$REGRESSION_FILE_PATH")
+                if [ -n "$REGRESSION_LIST" ]; then
+                    MESSAGE_LINES+=("\`\`\`")
+                    MESSAGE_LINES+=("$REGRESSION_LIST")
+                    MESSAGE_LINES+=("\`\`\`")
+                else
+                    MESSAGE_LINES+=("  (Could not read regression details from file for inline display)")
+                fi
+                ARTIFACT_PATH_OUTPUT="" # No artifact if details are inline
+              else
+                MESSAGE_LINES+=("  (Regression details file not found or download failed; cannot list specific regressions here.)")
+                ARTIFACT_PATH_OUTPUT=""
+              fi
+            elif [[ "$REGRESSION_COUNT" -gt 10 ]]; then
+              MESSAGE_LINES+=("  - Details for the ${REGRESSION_COUNT} regressions are in the attached \`regression_details.txt\` file.")
+              if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+                ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+              else
+                MESSAGE_LINES+=("  (Error: Regression details file was expected but not found or download failed.)")
+                ARTIFACT_PATH_OUTPUT=""
+              fi
+            fi
+          elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
+            # This case handles general comparison failures NOT due to specific regressions
+            # (e.g. PR has fewer tests passing overall, but not necessarily ones that *were* passing on target)
+            MESSAGE_LINES+=("**:warning: TEST RESULTS DECLINED**")
+            MESSAGE_LINES+=("  - The PR branch shows a decrease in test success compared to the target branch, but no specific regressions were identified by the \`meta-regression-analysis\` job.")
+            MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
+            MESSAGE_LINES+=("  - Target Branch (\`${TARGET_BRANCH}\`): **${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} passed (${TARGET_PERCENTAGE}%)**")
+          elif [[ "$COMPARE_RESULT" == "success" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
+             MESSAGE_LINES+=("**:white_check_mark: NO REGRESSIONS DETECTED**")
+             MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
+             MESSAGE_LINES+=("  - Target Branch (\`${TARGET_BRANCH}\`): **${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} passed (${TARGET_PERCENTAGE}%)**")
+          fi
+
+          MESSAGE_LINES+=("---")
+          MESSAGE_LINES+=("[View Workflow Run](${ACTION_RUN_URL})")
 
           # Construct with actual newlines
-          FINAL_MESSAGE_BODY=$(printf "%s\n" "${MESSAGE_LINES[@]}")
+          FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
           if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
             # Remove the very last actual newline
-            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\n}"
+            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
           fi
 
           echo "::debug::Final message body prepared in test-pytest.yml (with actual newlines):"

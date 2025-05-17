@@ -1,0 +1,127 @@
+name: Assign Commit Authors to PR
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "The number of the pull request."
+        required: true
+        type: number
+      exclude_logins:
+        description: "Comma-separated list of GitHub logins to explicitly exclude from assignment."
+        required: false
+        type: string
+        default: ""
+      fail_on_error:
+        description: "If true, the job will fail if adding assignees fails."
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      gh_token:
+        description: "GitHub token with permissions to read repo data and write to PRs (assign users)."
+        required: true
+
+jobs:
+  assign_commit_authors:
+    name: Assign Commit Authors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get PR Commit Author Logins
+        id: get_authors
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXCLUDE_LOGINS_INPUT: ${{ inputs.exclude_logins }}
+        run: |
+          set -e # Exit on error for this script block
+          echo "Fetching commit authors for PR #$PR_NUMBER..."
+
+          # Get logins of commit authors from the PR's commits list
+          # Filters out null/empty logins and common bot patterns (ending in [bot] or -bot, case-insensitive)
+          # Also handles the case where the author object might be null
+          PR_AUTHOR_LOGINS=$(gh pr view "$PR_NUMBER" --json commits \
+            --jq '.commits.[].author | select(.login != null and .login != "") | .login' | grep -v -E -i '(\[bot\]$|-bot$)')
+
+          if [ -z "$PR_AUTHOR_LOGINS" ]; then
+            echo "No valid commit author logins found for PR #$PR_NUMBER."
+            echo "authors_to_assign=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Raw author logins from commits:"
+          echo "$PR_AUTHOR_LOGINS"
+
+          # Get current assignees to avoid trying to re-assign them (gh pr edit --add-assignee is idempotent but good practice)
+          CURRENT_ASSIGNEES=$(gh pr view "$PR_NUMBER" --json assignees --jq '.assignees.[].login' || echo "")
+          echo "Current assignees on PR #$PR_NUMBER:"
+          echo "$CURRENT_ASSIGNEES"
+
+          # Process exclusions
+          IFS=',' read -r -a EXCLUDED_ARRAY <<< "$EXCLUDE_LOGINS_INPUT"
+          declare -A EXCLUSIONS_MAP
+          for login in "${EXCLUDED_ARRAY[@]}"; do
+            trimmed_login=$(echo "$login" | xargs) # Trim whitespace
+            if [ -n "$trimmed_login" ]; then
+              EXCLUSIONS_MAP["$trimmed_login"]=1
+              echo "Excluding user (from input): $trimmed_login"
+            fi
+          done
+
+          UNIQUE_AUTHORS_TO_ASSIGN_LIST=()
+          # Create an associative array to track unique authors already processed or current assignees
+          declare -A SEEN_OR_ASSIGNED_AUTHORS
+
+          # Populate SEEN_OR_ASSIGNED_AUTHORS with current assignees
+          while IFS= read -r assignee; do
+            if [ -n "$assignee" ]; then
+              SEEN_OR_ASSIGNED_AUTHORS["$assignee"]=1
+            fi
+          done <<< "$CURRENT_ASSIGNEES"
+
+          while IFS= read -r author_login; do
+            if [ -z "$author_login" ]; then
+              continue # Skip empty lines
+            fi
+            # Check if author is already seen/assigned or in explicit exclusion list
+            if [ -z "${SEEN_OR_ASSIGNED_AUTHORS[$author_login]}" ] && [ -z "${EXCLUSIONS_MAP[$author_login]}" ]; then
+              UNIQUE_AUTHORS_TO_ASSIGN_LIST+=("$author_login")
+              SEEN_OR_ASSIGNED_AUTHORS["$author_login"]=1 # Mark as seen for assignment
+              echo "Queued for assignment: $author_login"
+            elif [ -n "${EXCLUSIONS_MAP[$author_login]}" ]; then
+              echo "Skipping excluded user (from commit authors): $author_login"
+            else
+              echo "Skipping already assigned or previously processed user: $author_login"
+            fi
+          done <<< "$(echo "$PR_AUTHOR_LOGINS" | sort -u)" # Process unique commit authors
+
+          if [ ${#UNIQUE_AUTHORS_TO_ASSIGN_LIST[@]} -eq 0 ]; then
+            echo "No new, non-excluded authors to assign."
+            echo "authors_to_assign=" >> "$GITHUB_OUTPUT"
+          else
+            AUTHORS_STRING=$(IFS=,; echo "${UNIQUE_AUTHORS_TO_ASSIGN_LIST[*]}")
+            echo "Final list of new authors to assign: $AUTHORS_STRING"
+            echo "authors_to_assign=$AUTHORS_STRING" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Add Assignees to PR
+        if: steps.get_authors.outputs.authors_to_assign != ''
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          AUTHORS: ${{ steps.get_authors.outputs.authors_to_assign }}
+        run: |
+          echo "Assigning authors: $AUTHORS to PR #$PR_NUMBER"
+          if ! gh pr edit "$PR_NUMBER" --add-assignee "$AUTHORS"; then
+            echo "::error::Failed to assign authors to PR #$PR_NUMBER."
+            if [ "${{ inputs.fail_on_error }}" == "true" ]; then
+              exit 1
+            fi
+          else
+            echo "Assignees successfully added/updated for PR #$PR_NUMBER."
+          fi
+
+      - name: No new authors to assign
+        if: steps.get_authors.outputs.authors_to_assign == ''
+        run: |
+          echo "No new, non-excluded commit authors found to assign to PR #$PR_NUMBER."
