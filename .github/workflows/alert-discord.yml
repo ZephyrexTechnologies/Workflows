@@ -75,17 +75,11 @@ jobs:
             exit 1
           fi
 
-          # Check for jq availability (required for parsing DISCORD_USER_MAP)
-          if ! command -v jq &> /dev/null; then
-              echo "::warning::jq command-line JSON processor is not available. Pings based on DISCORD_USER_MAP will not work. Please install jq on the runner."
-              # Fallback or exit if jq is critical and not found. For now, will allow message sending without pings if map is used.
-          fi
+          # MESSAGE_BODY_INPUT is now expected to contain literal \n where newlines are desired.
+          # The main processing is to ensure backslashes and quotes are escaped for JSON.
+          PROCESSED_MESSAGE_BODY="$MESSAGE_BODY_INPUT"
 
-          # Process message_body to convert literal '\\n' (double backslash-n) to actual newlines.
-          # This should handle cases where the input message_body contains literal \\n from GitHub Actions outputs.
-          PROCESSED_MESSAGE_BODY=$(printf '%b' "$MESSAGE_BODY_INPUT")
-
-          echo "--- PROCESSED_MESSAGE_BODY (after printf %b) --- "
+          echo "--- PROCESSED_MESSAGE_BODY (now same as input) --- "
           echo "$PROCESSED_MESSAGE_BODY"
           echo "--- PROCESSED_MESSAGE_BODY (with cat -A) --- "
           echo "$PROCESSED_MESSAGE_BODY" | cat -A
@@ -104,9 +98,8 @@ jobs:
               FORMATTED_USER_KEYS=$(echo "$PING_USER_IDS_INPUT" | sed 's/,/ /g')
               for user_key in $FORMATTED_USER_KEYS; do
                 trimmed_user_key=$(echo "$user_key" | xargs) # Trim whitespace
-                echo "Debug: Processing trimmed_user_key = '$trimmed_user_key'"
+                echo "Debug: Processing trimmed_user_key for ping = '$trimmed_user_key'"
                 if [ -n "$trimmed_user_key" ]; then
-                  # Safely extract Discord ID using jq with --arg
                   discord_user_id=$(echo "$DISCORD_USER_MAP_SECRET" | jq -r --arg K "$trimmed_user_key" '.[$K]')
                   echo "Debug: For key '$trimmed_user_key', got discord_user_id = '$discord_user_id'"
                   if [ -n "$discord_user_id" ] && [ "$discord_user_id" != "null" ]; then
@@ -126,23 +119,16 @@ jobs:
             echo "::warning::'ping_user_ids' were provided, but 'jq' is not available to parse 'DISCORD_USER_MAP'. Pings will be skipped."
           fi
 
-          # 2. Prepare final message content for JSON
-          # Escape only backslashes and double quotes. Newlines in MESSAGE_BODY_INPUT
-          # will be preserved as actual newlines in the JSON content, which Discord handles.
           CONTENT_TO_SEND="${PINGS_PREFIX}${PROCESSED_MESSAGE_BODY}"
-          echo "--- CONTENT_TO_SEND (after printf processing) --- "
+          echo "--- CONTENT_TO_SEND (pings + processed_message_body) --- "
           echo "$CONTENT_TO_SEND"
           echo "--- END CONTENT_TO_SEND ---"
 
-          # More robust escaping for JSON:
-          # 1. Escape backslashes
-          # 2. Escape double quotes
-          # 3. Convert literal newlines to \\n
-          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | \
-              sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' | \
-              awk 'NR > 1 { printf("\\\\n") } { printf("%s", $0) }')
+          # JSON Escaping: only backslashes and double quotes need escaping now.
+          # Literal \n from input should remain as \n for the JSON string.
+          ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
 
-          echo "--- ESCAPED_JSON_CONTENT --- "
+          echo "--- ESCAPED_JSON_CONTENT (after final sed) --- "
           echo "$ESCAPED_JSON_CONTENT"
           echo "--- END ESCAPED_JSON_CONTENT ---"
 

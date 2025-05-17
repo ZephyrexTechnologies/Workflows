@@ -16,8 +16,8 @@ on:
       DISCORD_WEBHOOK_URL:
         description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."
         required: false
-      GH_TO_DISCORD_USER_MAP:
-        description: "JSON string mapping GitHub usernames to Discord User IDs (e.g., {\\\"user1\\\":\\\"id1\\\"}). If not provided, users won't be pinged."
+      DISCORD_USER_MAP:
+        description: 'JSON string mapping GitHub usernames to Discord User IDs (e.g., {"user1":"id1"}). If not provided, users won''t be pinged.'
         required: false
     outputs:
       pr_total:
@@ -957,7 +957,7 @@ jobs:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_ASSIGNEES_JSON: ${{ toJson(github.event.pull_request.assignees) }}
-          USER_MAP_JSON: ${{ secrets.GH_TO_DISCORD_USER_MAP || '{}' }}
+          USER_MAP_JSON: ${{ secrets.DISCORD_USER_MAP || '{}' }}
           REGRESSION_FILE_PATH: "regression_details.txt"
           DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
         run: |
@@ -993,12 +993,14 @@ jobs:
           # MESSAGE_LINES+=("**Pytest Failure on [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
           # ... (rest of original message lines) ...
 
-          FINAL_MESSAGE_BODY=$(printf "%s\n" "${MESSAGE_LINES[@]}")
+          # Construct with literal \n for GitHub output
+          FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}") # Use %s\\n to create literal \n
           if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
-            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\n}"
+            # Remove the very last literal \n (2 characters)
+            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
           fi
 
-          echo "::debug::Final message body prepared in test-pytest.yml:"
+          echo "::debug::Final message body prepared in test-pytest.yml (with literal \\n):"
           echo "$FINAL_MESSAGE_BODY"
           echo "$FINAL_MESSAGE_BODY" | cat -A # Show with non-printables
 
@@ -1025,4 +1027,4 @@ jobs:
       should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      DISCORD_USER_MAP: ${{ secrets.GH_TO_DISCORD_USER_MAP }}
+      DISCORD_USER_MAP: ${{ secrets.DISCORD_USER_MAP }}
