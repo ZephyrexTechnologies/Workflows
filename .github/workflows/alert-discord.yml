@@ -135,7 +135,7 @@ jobs:
           echo "--- END ESCAPED_JSON_CONTENT ---"
 
           # 3. Construct the core JSON payload part for the 'payload_json' field or -d
-          JSON_PAYLOAD_PART="{\\"content\\": \\"$ESCAPED_JSON_CONTENT\\"}"
+          JSON_PAYLOAD_PART="{\"content\": \"$ESCAPED_JSON_CONTENT\"}"
 
           echo "--- JSON_PAYLOAD_PART --- "
           echo "$JSON_PAYLOAD_PART"
