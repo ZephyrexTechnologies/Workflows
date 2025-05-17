@@ -124,9 +124,10 @@ jobs:
 
           # More robust escaping for JSON:
           # 1. Escape backslashes
+          # 2. Escape double quotes
+          # 3. Convert literal newlines to \\n
           ESCAPED_JSON_CONTENT=$(echo "$CONTENT_TO_SEND" | \
-              sed -e 's/\\\\/\\\\\\\\/g' \\
-                  -e 's/"/\\\\"/g' | \
+              sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' | \
               awk 'NR > 1 { printf("\\\\n") } { printf("%s", $0) }')
 
           echo "--- ESCAPED_JSON_CONTENT --- "
