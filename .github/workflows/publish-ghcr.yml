@@ -20,11 +20,14 @@ on:
         description: "Build arguments to pass to Docker build (e.g., MY_ARG=value)."
         required: false
         type: string
-
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
 jobs:
   build-and-push-ghcr:
     name: Build and Push Docker Image to GHCR
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read # To checkout the repository
       packages: write # To push packages to GHCR

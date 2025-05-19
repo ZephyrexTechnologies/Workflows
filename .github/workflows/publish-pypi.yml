@@ -18,6 +18,10 @@ on:
         required: false
         type: string
         default: "."
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       TWINE_USERNAME:
         description: "Twine username (usually __token__ for API tokens)"
@@ -29,7 +33,7 @@ on:
 jobs:
   build-and-publish:
     name: Build and Publish to PyPI
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}

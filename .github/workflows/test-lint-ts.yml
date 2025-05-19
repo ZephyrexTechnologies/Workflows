@@ -26,6 +26,10 @@ on:
         required: false
         type: boolean
         default: false
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     outputs:
       lint_errors_pr_branch:
         description: "JSON string of lint errors on the PR branch after attempting fixes."
@@ -45,7 +49,7 @@ jobs:
     # Only run if a target branch is specified for comparison
     if: ${{ inputs.target_branch_to_compare != '' }}
     name: Lint Target Branch
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       clean_files_json: ${{ steps.extract-clean-files.outputs.CLEAN_FILES_JSON }}
     steps:
@@ -59,7 +63,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: 'npm' # Or 'yarn' if you use yarn
+          cache: "npm" # Or 'yarn' if you use yarn
 
       - name: Install dependencies
         run: |
@@ -84,18 +88,18 @@ jobs:
           # For ESLint, you might look for sections that don't report problems for a file.
           # This example assumes a simple case or a tool that can output clean files.
           # A more robust solution would parse the specific linter's output format.
-          
+
           # Example: If your linter lists all files and then errors, you could:
           # 1. Get all relevant files (e.g., find . -name '*.ts' -o -name '*.tsx')
           # 2. Get all files with errors from target_lint_output.txt
           # 3. Subtract set 2 from set 1.
-          
+
           # For now, as a basic placeholder, we'll assume no files are "clean" if any error exists,
           # or all files are clean if no errors. This needs to be more sophisticated.
           # If the linter has a JSON output, it's much easier.
-          
+
           CLEAN_FILES_LIST='[]' # Default to empty list
-          
+
           # Attempt to parse ESLint JSON output if available (recommended)
           # if [ -f target_lint_output.json ]; then # Assuming lint_command could produce target_lint_output.json
           #   CLEAN_FILES_LIST=$(jq -r '[.[] | select(.errorCount == 0 and .warningCount == 0) | .filePath] | @json' target_lint_output.json)
@@ -119,14 +123,14 @@ jobs:
               CLEAN_FILES_LIST="[]"
             fi
           # fi
-          
+
           echo "Identified clean files (JSON): $CLEAN_FILES_LIST"
           echo "CLEAN_FILES_JSON=$CLEAN_FILES_LIST" >> $GITHUB_OUTPUT
         shell: bash
 
   lint-pr-branch:
     name: Lint PR Branch & Attempt Fixes
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       lint_errors_json: ${{ steps.extract-errors-pr.outputs.LINT_ERRORS_JSON }}
       has_lint_errors: ${{ steps.check-errors-pr.outputs.HAS_LINT_ERRORS }}
@@ -142,7 +146,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: 'npm'
+          cache: "npm"
 
       - name: Install dependencies
         run: |
@@ -157,13 +161,13 @@ jobs:
           ${{ inputs.fix_command }} > pr_fix_output.txt 2>&1 || true
           echo "Auto-fix command finished. Output:"
           cat pr_fix_output.txt
-          
+
           echo "Running linter again after auto-fix to get final error state..."
           # Run the lint command again, capture its output to a file (e.g., JSON if supported)
           # Ensure your lint_command can output to a file, e.g., eslint --format json --output-file pr_lint_errors.json
           # If it only outputs to stdout, redirect:
           ${{ inputs.lint_command }} --format json --output-file pr_lint_errors.json > pr_lint_stdout.txt 2>&1 || true
-          
+
           echo "Final lint run (after fix attempt) STDOUT:"
           cat pr_lint_stdout.txt
           if [ -f pr_lint_errors.json ]; then
@@ -202,7 +206,7 @@ jobs:
             # As a fallback, you could try to parse pr_lint_stdout.txt, but it's less reliable.
             # For simplicity, we keep LINT_ERRORS_OUTPUT and ERRORING_FILES_LIST as '[]'.
           fi
-          
+
           echo "Extracted lint errors (JSON): $LINT_ERRORS_OUTPUT"
           echo "LINT_ERRORS_JSON=$LINT_ERRORS_OUTPUT" >> $GITHUB_OUTPUT
           echo "Erroring files (JSON): $ERRORING_FILES_LIST"
@@ -260,8 +264,8 @@ jobs:
 
   check-results:
     name: Check Lint Results
-    runs-on: ubuntu-latest
-    needs: [lint-pr-branch, analyze-regressions] 
+    runs-on: ${{ inputs.runs_on }}
+    needs: [lint-pr-branch, analyze-regressions]
     if: always()
     steps:
       - name: Evaluate Results
@@ -287,7 +291,7 @@ jobs:
               echo "::debug::Regression analysis job was skipped. Using default regression values (false, 0)."
             fi
           fi
-          
+
           FAIL_ON_REGRESSIONS_ONLY="${{ inputs.fail_on_new_regressions_only }}"
 
           echo "--- Lint Check Results ---"
@@ -295,7 +299,7 @@ jobs:
           echo "Target Branch for Comparison: ${{ inputs.target_branch_to_compare }}"
           echo "Regression Analysis Performed: $REGRESSION_ANALYSIS_WAS_INTENDED"
           echo "Fail on New Regressions Only: $FAIL_ON_REGRESSIONS_ONLY"
-          
+
           if [ "$REGRESSION_ANALYSIS_WAS_INTENDED" == "true" ]; then
             echo "Has Regressions: $HAS_REGRESSIONS"
             echo "Regression Count: $REGRESSION_COUNT"

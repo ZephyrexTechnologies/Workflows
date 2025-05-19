@@ -23,6 +23,10 @@ on:
         required: false
         type: string
         default: "."
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       NPM_TOKEN:
         description: "NPM authentication token"
@@ -31,7 +35,7 @@ on:
 jobs:
   build-and-publish:
     name: Build and Publish to npm
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}

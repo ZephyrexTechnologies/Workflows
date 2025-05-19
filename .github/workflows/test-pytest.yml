@@ -17,6 +17,10 @@ on:
         required: false
         type: boolean
         default: false
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."
@@ -70,7 +74,7 @@ jobs:
 
   test-source-branch:
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
       passed: ${{ steps.extract-results.outputs.passed }}
@@ -329,7 +333,7 @@ jobs:
 
   test-target-branch:
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
       passed: ${{ steps.extract-results.outputs.passed }}
@@ -592,7 +596,7 @@ jobs:
 
   compare-results:
     needs: [test-source-branch, test-target-branch]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       has_regressions: ${{ needs.perform-regression-analysis.outputs.has_regressions }}
       regression_count: ${{ needs.perform-regression-analysis.outputs.regression_count }}
@@ -906,7 +910,7 @@ jobs:
         needs.compare-results.result == 'failure' ||
         needs.perform-regression-analysis.outputs.has_regressions == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       message_body: ${{ steps.construct_notification.outputs.message_body_out }}
       ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}

@@ -18,6 +18,10 @@ on:
         required: false
         type: string
         default: ""
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     outputs:
       pr_has_errors:
         description: "Boolean indicating if the PR branch has Storybook test errors."
@@ -42,7 +46,7 @@ jobs:
     if: ${{ inputs.target_branch_to_compare != '' }}
     name: Test Target Branch Stories
     needs: [lint] # Ensure linting passes before running tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       passing_stories_json: ${{ steps.extract-passing-stories.outputs.PASSING_STORIES_JSON }}
     steps:
@@ -132,7 +136,7 @@ jobs:
   test-pr-branch-storybook:
     name: Test PR Branch Stories
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       has_errors: ${{ steps.run-tests-pr.outcome == 'failure' || steps.extract-failing-stories.outputs.HAS_FAILING_STORIES == 'true' }}
       failing_stories_json: ${{ steps.extract-failing-stories.outputs.FAILING_STORIES_JSON }}
@@ -230,7 +234,7 @@ jobs:
 
   check-storybook-results:
     name: Check Storybook Results & Regressions
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     needs: [test-pr-branch-storybook, analyze-storybook-regressions]
     if: always() # Always run to give a final status
     steps:

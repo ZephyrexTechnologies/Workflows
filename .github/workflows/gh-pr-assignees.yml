@@ -17,6 +17,10 @@ on:
         required: false
         type: boolean
         default: false
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       gh_token:
         description: "GitHub token with permissions to read repo data and write to PRs (assign users)."
@@ -25,7 +29,7 @@ on:
 jobs:
   assign_commit_authors:
     name: Assign Commit Authors
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     steps:
       - name: Get PR Commit Author Logins
         id: get_authors

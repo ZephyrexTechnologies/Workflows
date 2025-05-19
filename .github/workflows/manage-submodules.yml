@@ -16,7 +16,10 @@ on:
         required: false
         type: string
         default: "sync: update files from main repository"
-
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
 jobs:
   manage-submodules:
     runs-on: ubuntu-22.04

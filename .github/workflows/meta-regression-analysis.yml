@@ -29,7 +29,10 @@ on:
         description: "Current run ID for artifact naming if PR number is not available."
         required: true
         type: string
-
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
     outputs:
       has_regressions:
         description: "Boolean indicating if regressions were found."
@@ -43,7 +46,7 @@ on:
 
 jobs:
   analyze:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       HAS_REGRESSIONS: ${{ steps.check-regressions-script.outputs.HAS_REGRESSIONS }}
       REGRESSION_COUNT: ${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
