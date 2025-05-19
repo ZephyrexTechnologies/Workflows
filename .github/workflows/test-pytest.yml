@@ -1123,32 +1123,37 @@ jobs:
           if [[ "$HAS_REGRESSIONS" == "true" ]]; then
             MESSAGE_LINES+=("**:red_circle: REGRESSIONS DETECTED**")
             MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
-            if [[ "$REGRESSION_COUNT" -gt 0 && "$REGRESSION_COUNT" -le 10 ]]; then
-              if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+            
+            # Calculate current message length
+            CURRENT_MESSAGE=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
+            CURRENT_LENGTH=${#CURRENT_MESSAGE}
+            
+            if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+              # Read regression details
+              REGRESSION_LIST=$(awk '/^[0-9]+\./ {sub(/^[0-9]+\. /, "- "); print}' "$REGRESSION_FILE_PATH")
+              
+              # Calculate length with regression details
+              TEMP_MESSAGE="$CURRENT_MESSAGE"
+              TEMP_MESSAGE+="\`\`\`"
+              TEMP_MESSAGE+="$REGRESSION_LIST"
+              TEMP_MESSAGE+="\`\`\`"
+              TEMP_LENGTH=${#TEMP_MESSAGE}
+              
+              if [ $TEMP_LENGTH -le 2000 ]; then
+                # If total length would be under 2000 chars, include in message
                 MESSAGE_LINES+=("  - **Failed Tests (Regressions):**")
-                # Read up to 10 lines from the file, skipping the header
-                # Use awk to ensure only regression lines (starting with number and dot) are processed
-                REGRESSION_LIST=$(awk '/^[0-9]+\./ {sub(/^[0-9]+\. /, "- "); print; count++} count>=10 {exit}' "$REGRESSION_FILE_PATH")
-                if [ -n "$REGRESSION_LIST" ]; then
-                    MESSAGE_LINES+=("\`\`\`")
-                    MESSAGE_LINES+=("$REGRESSION_LIST")
-                    MESSAGE_LINES+=("\`\`\`")
-                else
-                    MESSAGE_LINES+=("  (Could not read regression details from file for inline display)")
-                fi
+                MESSAGE_LINES+=("\`\`\`")
+                MESSAGE_LINES+=("$REGRESSION_LIST")
+                MESSAGE_LINES+=("\`\`\`")
                 ARTIFACT_PATH_OUTPUT="" # No artifact if details are inline
               else
-                MESSAGE_LINES+=("  (Regression details file not found or download failed; cannot list specific regressions here.)")
-                ARTIFACT_PATH_OUTPUT=""
-              fi
-            elif [[ "$REGRESSION_COUNT" -gt 10 ]]; then
-              MESSAGE_LINES+=("  - Details for the ${REGRESSION_COUNT} regressions are in the attached \`regression_details.txt\` file.")
-              if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+                # If would exceed 2000 chars, attach file instead
+                MESSAGE_LINES+=("  - Details for the ${REGRESSION_COUNT} regressions are in the attached \`regression_details.txt\` file.")
                 ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
-              else
-                MESSAGE_LINES+=("  (Error: Regression details file was expected but not found or download failed.)")
-                ARTIFACT_PATH_OUTPUT=""
               fi
+            else
+              MESSAGE_LINES+=("  (Regression details file not found or download failed; cannot list specific regressions here.)")
+              ARTIFACT_PATH_OUTPUT=""
             fi
           elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
             # This case handles general comparison failures NOT due to specific regressions
@@ -1198,6 +1203,7 @@ jobs:
       ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
       artifact_paths: ${{ needs.prepare-notification.outputs.artifact_path }}
       should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
+      runs_on: ${{ inputs.runs_on }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       DISCORD_USER_MAP: ${{ secrets.DISCORD_USER_MAP }}
