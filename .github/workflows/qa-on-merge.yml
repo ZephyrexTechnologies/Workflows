@@ -3,8 +3,10 @@ name: QA - Set Status on Merge
 on:
   pull_request:
     types: [closed]
+    branches:
+        - dev
 
 jobs:
   mark-testing-pending:
     if: github.event.pull_request.merged == true
-    uses: ZephyrexTechnologies/Workflows/.github/workflows/qa-update-status
+    uses: ./.github/workflows/qa-update-status

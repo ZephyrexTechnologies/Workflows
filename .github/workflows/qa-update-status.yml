@@ -1,30 +1,13 @@
-name: Reusable - Set Q/A Status in Project v2
+name: Reusable - Set Q/A Status in Zephyrex Board
 
 on:
   workflow_call:
-    inputs:
-      project_id:
-        description: "GitHub Project v2 ID"
+    secrets:
+      GITHUB_TOKEN:
         required: true
-        type: string
-
-      item_node_id:
-        description: "Node ID of the issue or PR to update"
-        required: true
-        type: string
-
-      qa_field_id:
-        description: "Field ID of the 'Q/A Status' field"
-        required: true
-        type: string
-
-      status_option_id:
-        description: "Option ID for the new Q/A Status (e.g., 'Testing In Progress')"
-        required: true
-        type: string
 
 jobs:
-  update-qa-status:
+  qa-update-status:
     name: Set QA Status on Project Item using Project v2 QA Status Field
     runs-on: ubuntu-latest
     permissions:
@@ -32,17 +15,28 @@ jobs:
       contents: read
       pull-requests: read
 
+    env:
+      PROJECT_ID: ${{ secrets.ZEPHYREX_PROJECT_ID }}
+      QA_FIELD_ID: ${{ secrets.ZEPHYREX_QA_FIELD_ID }}
+      STATUS_OPTION_ID: ${{ secrets.ZEPHYREX_STATUS_OPTION_ID }}
+
     steps:
       - name: Set Q/A Status via GraphQL
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }} 
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const gql = fs.readFileSync('./graphql/update-qa-status.graphql', 'utf8');
+            const itemId = process.env.GITHUB_EVENT_PATH ? require(process.env.GITHUB_EVENT_PATH).pull_request.node_id : null;
+
+            if (!itemId) {
+              throw new Error("Unable to determine pull request node_id from event payload.");
+            }
+
             await github.graphql(gql, {
-              projectId: "${{ inputs.project_id }}",
-              itemId: "${{ inputs.item_node_id }}",
-              fieldId: "${{ inputs.qa_field_id }}",
-              optionId: "${{ inputs.status_option_id }}"
+              projectId: process.env.PROJECT_ID,
+              itemId: itemId,
+              fieldId: process.env.QA_FIELD_ID,
+              optionId: process.env.STATUS_OPTION_ID
             });
