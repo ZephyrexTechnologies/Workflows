@@ -1,0 +1,24 @@
+query {
+  viewer {
+    projectsV2(first: 5) {
+      nodes {
+        id
+        title
+        number
+        fields(first: 20) {
+          nodes {
+            __typename
+            ... on ProjectV2SingleSelectField {
+              id
+              name
+              options {
+                id
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}'

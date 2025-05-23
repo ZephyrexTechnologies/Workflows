@@ -1,0 +1,42 @@
+name: Reusable - Set Q/A Status in Zephyrex Board
+
+on:
+  workflow_call:
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  qa-update-status:
+    name: Set QA Status on Project Item using Project v2 QA Status Field
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      pull-requests: read
+
+    env:
+      PROJECT_ID: ${{ secrets.ZEPHYREX_PROJECT_ID }}
+      QA_FIELD_ID: ${{ secrets.ZEPHYREX_QA_FIELD_ID }}
+      STATUS_OPTION_ID: ${{ secrets.ZEPHYREX_STATUS_OPTION_ID }}
+
+    steps:
+      - name: Set Q/A Status via GraphQL
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const gql = fs.readFileSync('./graphql/update-qa-status.graphql', 'utf8');
+            const itemId = process.env.GITHUB_EVENT_PATH ? require(process.env.GITHUB_EVENT_PATH).pull_request.node_id : null;
+
+            if (!itemId) {
+              throw new Error("Unable to determine pull request node_id from event payload.");
+            }
+
+            await github.graphql(gql, {
+              projectId: process.env.PROJECT_ID,
+              itemId: itemId,
+              fieldId: process.env.QA_FIELD_ID,
+              optionId: process.env.STATUS_OPTION_ID
+            });
