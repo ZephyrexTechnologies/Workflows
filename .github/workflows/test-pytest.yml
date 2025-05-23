@@ -140,7 +140,11 @@ jobs:
           echo "::debug::Checking for collection errors"
           if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
             echo "::debug::Collection errors detected, extracting details"
-            echo "::error::Test discovery errors detected - Python modules could not be imported correctly"
+            echo "::error::Test discovery errors detected in PR branch - Python modules could not be imported correctly"
+            
+            # Show what was matched for debugging
+            echo "::debug::Matched error patterns:"
+            grep -n "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt || echo "::debug::No matches found (unexpected)"
             
             # Attempt to identify specific error type
             if grep -q "ImportError" collection_output.txt; then
@@ -158,7 +162,7 @@ jobs:
             fi
             
             echo "::debug::Error type identified: $ERROR_TYPE"
-            echo "Discovery error type: $ERROR_TYPE"
+            echo "PR branch discovery error type: $ERROR_TYPE"
             
             echo "::debug::Attempting to find specific error file"
             ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
@@ -169,14 +173,25 @@ jobs:
               echo "::debug::Extracting detailed error information for $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              echo "::debug::Error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
+            else
+              # If we couldn't find a specific file, get general error info
+              echo "::debug::Extracting general error information"
+              grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              echo "::debug::General error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             fi
             
-            echo "::error::Discovery error details: ${ERROR_DETAILS:0:200}..."
+            echo "::error::PR branch discovery error details: ${ERROR_DETAILS:0:200}..."
             echo "::debug::Setting has_collection_errors=true in GitHub output"
             HAS_COLLECTION_ERRORS="true"
           else
             echo "::debug::No collection errors detected, checking test count"
             echo "No discovery errors detected in PR branch"
+            
+            # Additional debugging to see what's in the collection output
+            echo "::debug::Checking collection output for any ERRORS or warnings:"
+            grep -i "error\|warning\|failed" collection_output.txt || echo "::debug::No error/warning patterns found"
             
             echo "::debug::Extracting test count from collection output"
             TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
@@ -335,15 +350,15 @@ jobs:
     needs: lint
     runs-on: ${{ inputs.runs_on }}
     outputs:
-      total: ${{ steps.extract-results.outputs.total }}
-      passed: ${{ steps.extract-results.outputs.passed }}
-      percentage: ${{ steps.extract-results.outputs.percentage }}
+      total: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.total || steps.extract-results.outputs.total }}
+      passed: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passed || steps.extract-results.outputs.passed }}
+      percentage: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.percentage || steps.extract-results.outputs.percentage }}
       collection_errors: ${{ steps.check-collection.outputs.has_collection_errors }}
       no_tests_found: ${{ steps.check-collection.outputs.no_tests_found }}
       has_errors: ${{ steps.check-collection.outputs.has_errors }}
       error_type: ${{ steps.check-collection.outputs.error_type }}
       error_details: ${{ steps.check-collection.outputs.error_details }}
-      passing_tests: ${{ steps.extract-results.outputs.passing_tests }}
+      passing_tests: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passing_tests || steps.extract-results.outputs.passing_tests }}
 
     steps:
       - name: Checkout target branch
@@ -402,6 +417,10 @@ jobs:
             echo "::debug::Collection errors detected, extracting details"
             echo "::warning::Test discovery errors detected in target branch - Python modules could not be imported correctly"
             
+            # Show what was matched for debugging
+            echo "::debug::Matched error patterns:"
+            grep -n "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt || echo "::debug::No matches found (unexpected)"
+            
             # Attempt to identify specific error type
             if grep -q "ImportError" collection_output.txt; then
               ERROR_TYPE="ImportError"
@@ -432,8 +451,10 @@ jobs:
               echo "::debug::Error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             else
               # If we couldn't find a specific file, get general error info
-              grep -A 15 "$ERROR_TYPE" collection_output.txt > error_details.txt
+              echo "::debug::Extracting general error information"
+              grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              echo "::debug::General error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             fi
             
             echo "::warning::Target branch discovery error details: ${ERROR_DETAILS:0:200}..."
@@ -442,6 +463,10 @@ jobs:
           else
             echo "::debug::No collection errors detected, checking test count"
             echo "No discovery errors detected in target branch"
+            
+            # Additional debugging to see what's in the collection output
+            echo "::debug::Checking collection output for any ERRORS or warnings:"
+            grep -i "error\|warning\|failed" collection_output.txt || echo "::debug::No error/warning patterns found"
             
             echo "::debug::Extracting test count from collection output"
             TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
@@ -499,6 +524,8 @@ jobs:
 
       - name: Extract test results
         id: extract-results
+        # Only run if there were no collection errors
+        if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
           set -x
           echo "::debug::Running Python script to extract test results"
@@ -593,6 +620,17 @@ jobs:
           echo "::debug::GITHUB_OUTPUT file content:"
           cat $GITHUB_OUTPUT
           echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
+
+      # Add a step to set default outputs when collection errors are detected
+      - name: Set collection error outputs
+        id: set-error-outputs
+        if: steps.check-collection.outputs.has_collection_errors == 'true'
+        run: |
+          echo "::warning::Setting default outputs for target branch due to collection errors"
+          echo "total=0" >> $GITHUB_OUTPUT
+          echo "passed=0" >> $GITHUB_OUTPUT
+          echo "percentage=0.00" >> $GITHUB_OUTPUT
+          echo "passing_tests=[]" >> $GITHUB_OUTPUT
 
   compare-results:
     needs: [test-source-branch, test-target-branch]
