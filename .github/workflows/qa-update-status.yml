@@ -27,7 +27,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const gql = fs.readFileSync('./graphql/update-qa-status.graphql', 'utf8');
+            const gql = fs.readFileSync('../../graphql/update-qa-status.graphql', 'utf8');
             const itemId = process.env.GITHUB_EVENT_PATH ? require(process.env.GITHUB_EVENT_PATH).pull_request.node_id : null;
 
             if (!itemId) {
