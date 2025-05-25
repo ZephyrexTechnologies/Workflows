@@ -85,6 +85,8 @@ jobs:
       error_type: ${{ steps.check-collection.outputs.error_type }}
       error_details: ${{ steps.check-collection.outputs.error_details }}
       failing_tests: ${{ steps.extract-results.outputs.failing_tests }}
+      skipped_tests: ${{ steps.extract-results.outputs.skipped_tests }}
+      xfailed_tests: ${{ steps.extract-results.outputs.xfailed_tests }}
 
     steps:
       - name: Checkout PR Branch
@@ -268,6 +270,8 @@ jobs:
           pr_passed = 0
           pr_percentage = 0
           failing_tests = []
+          skipped_tests = []
+          xfailed_tests = []
 
           try:
               print('Debug: Attempting to open pr_results.json')
@@ -292,16 +296,23 @@ jobs:
                   pr_passed = summary.get('passed', 0)
                   print(f'Debug: Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
                   
-                  # Extract failing tests
+                  # Extract failing, skipped, and xfailed tests
                   if 'tests' in pr_results:
-                      print('Debug: Extracting failing tests')
+                      print('Debug: Extracting failing, skipped, and xfailed tests')
                       for test in pr_results['tests']:
-                          if test.get('outcome') in ['failed', 'error']:
-                              nodeid = test.get('nodeid', '')
-                              if nodeid:
+                          outcome = test.get('outcome')
+                          nodeid = test.get('nodeid', '')
+                          if nodeid:
+                              if outcome in ['failed', 'error']:
                                   failing_tests.append(nodeid)
+                              elif outcome == 'skipped':
+                                  skipped_tests.append(nodeid)
+                              elif outcome == 'xfailed':
+                                  xfailed_tests.append(nodeid)
                       
                       print(f'Debug: Found {len(failing_tests)} failing tests')
+                      print(f'Debug: Found {len(skipped_tests)} skipped tests')
+                      print(f'Debug: Found {len(xfailed_tests)} xfailed tests')
               else:
                   print('Debug: No valid summary structure found')
               
@@ -326,6 +337,8 @@ jobs:
           print(f'Passed tests: {pr_passed}')
           print(f'Pass percentage: {pr_percentage:.2f}%')
           print(f'Failing tests: {len(failing_tests)}')
+          print(f'Skipped tests: {len(skipped_tests)}')
+          print(f'Xfailed tests: {len(xfailed_tests)}')
 
           # Set outputs for GitHub Actions
           print('Debug: Writing results to GITHUB_OUTPUT')
@@ -333,11 +346,19 @@ jobs:
               f.write(f'total={pr_total}\\n')
               f.write(f'passed={pr_passed}\\n')
               f.write(f'percentage={pr_percentage:.2f}\\n')
-              # Write failing tests as a compact JSON string to avoid issues with large outputs
+              # Write test lists as compact JSON strings to avoid issues with large outputs
               if failing_tests:
                   f.write(f'failing_tests={json.dumps(failing_tests)}\\n')
               else:
                   f.write('failing_tests=[]\\n')
+              if skipped_tests:
+                  f.write(f'skipped_tests={json.dumps(skipped_tests)}\\n')
+              else:
+                  f.write('skipped_tests=[]\\n')
+              if xfailed_tests:
+                  f.write(f'xfailed_tests={json.dumps(xfailed_tests)}\\n')
+              else:
+                  f.write('xfailed_tests=[]\\n')
 
           print('Debug: Results extraction completed')
           "
@@ -791,6 +812,69 @@ jobs:
           name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
           path: regression_details.txt
           retention-days: 1
+
+      - name: Check for skip/xfail regressions
+        run: |
+          set -x
+          echo "::debug::Checking for tests that were passing in target but are now skipped or xfailed in PR"
+
+          python3 - << 'EOF'
+          import json
+          import os
+
+          try:
+              # Parse the inputs
+              target_passing_str = '''${{ needs.test-target-branch.outputs.passing_tests }}'''
+              pr_skipped_str = '''${{ needs.test-source-branch.outputs.skipped_tests }}'''
+              pr_xfailed_str = '''${{ needs.test-source-branch.outputs.xfailed_tests }}'''
+              
+              # Parse JSON 
+              target_passing = json.loads(target_passing_str) if target_passing_str and target_passing_str != '[]' else []
+              pr_skipped = json.loads(pr_skipped_str) if pr_skipped_str and pr_skipped_str != '[]' else []
+              pr_xfailed = json.loads(pr_xfailed_str) if pr_xfailed_str and pr_xfailed_str != '[]' else []
+              
+              print(f"Parsed {len(target_passing)} passing tests from target branch")
+              print(f"Parsed {len(pr_skipped)} skipped tests from PR branch")
+              print(f"Parsed {len(pr_xfailed)} xfailed tests from PR branch")
+              
+              # Find tests that were passing in target but are now skipped or xfailed in PR
+              target_passing_set = set(target_passing)
+              pr_skipped_set = set(pr_skipped)
+              pr_xfailed_set = set(pr_xfailed)
+              
+              passing_to_skipped = list(target_passing_set.intersection(pr_skipped_set))
+              passing_to_xfailed = list(target_passing_set.intersection(pr_xfailed_set))
+              
+              total_skip_xfail_regressions = len(passing_to_skipped) + len(passing_to_xfailed)
+              
+              if total_skip_xfail_regressions > 0:
+                  print(f"Found {total_skip_xfail_regressions} tests that were passing in target but are now skipped/xfailed in PR!")
+                  
+                  warning_message = f"::warning::Skip/XFail Analysis: {total_skip_xfail_regressions} test(s) that were passing in target branch are now being skipped or xfailed in PR branch."
+                  print(warning_message)
+                  
+                  if passing_to_skipped:
+                      print(f"Tests now SKIPPED ({len(passing_to_skipped)}):")
+                      for idx, test in enumerate(sorted(passing_to_skipped), 1):
+                          print(f"  {idx}. {test}")
+                  
+                  if passing_to_xfailed:
+                      print(f"Tests now XFAILED ({len(passing_to_xfailed)}):")
+                      for idx, test in enumerate(sorted(passing_to_xfailed), 1):
+                          print(f"  {idx}. {test}")
+                  
+                  print("")
+                  print("::warning::While these changes don't fail the workflow, they indicate tests that were working before are now being bypassed.")
+                  print("::warning::Please review these tests to ensure this is intentional.")
+              else:
+                  print("No skip/xfail regressions found - all previously passing tests are still running.")
+          except Exception as e:
+              print(f"Error in skip/xfail analysis: {e}")
+              import traceback
+              print(traceback.format_exc())
+          EOF
+
+          echo "Skip/xfail regression analysis completed"
 
       - name: Compare test results
         run: |
