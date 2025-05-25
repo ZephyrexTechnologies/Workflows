@@ -87,6 +87,9 @@ jobs:
       failing_tests: ${{ steps.extract-results.outputs.failing_tests }}
       skipped_tests: ${{ steps.extract-results.outputs.skipped_tests }}
       xfailed_tests: ${{ steps.extract-results.outputs.xfailed_tests }}
+      all_tests: ${{ steps.extract-results.outputs.all_tests }}
+      skipped_tests_with_reasons: ${{ steps.extract-results.outputs.skipped_tests_with_reasons }}
+      xfailed_tests_with_reasons: ${{ steps.extract-results.outputs.xfailed_tests_with_reasons }}
 
     steps:
       - name: Checkout PR Branch
@@ -272,6 +275,9 @@ jobs:
           failing_tests = []
           skipped_tests = []
           xfailed_tests = []
+          all_tests = []
+          skipped_tests_with_reasons = {}
+          xfailed_tests_with_reasons = {}
 
           try:
               print('Debug: Attempting to open pr_results.json')
@@ -296,23 +302,48 @@ jobs:
                   pr_passed = summary.get('passed', 0)
                   print(f'Debug: Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
                   
-                  # Extract failing, skipped, and xfailed tests
+                  # Extract all tests by outcome and collect all test nodeids with reasons
                   if 'tests' in pr_results:
-                      print('Debug: Extracting failing, skipped, and xfailed tests')
+                      print('Debug: Extracting failing, skipped, xfailed, and all tests with reasons')
                       for test in pr_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
                           if nodeid:
+                              all_tests.append(nodeid)  # Track all tests regardless of outcome
                               if outcome in ['failed', 'error']:
                                   failing_tests.append(nodeid)
                               elif outcome == 'skipped':
                                   skipped_tests.append(nodeid)
+                                  # Extract skip reason
+                                  skip_reason = 'No reason provided'
+                                  if 'longrepr' in test and test['longrepr']:
+                                      # longrepr can be a string or list, handle both
+                                      longrepr = test['longrepr']
+                                      if isinstance(longrepr, list) and longrepr:
+                                          skip_reason = str(longrepr[0]) if longrepr[0] else 'No reason provided'
+                                      elif isinstance(longrepr, str):
+                                          skip_reason = longrepr
+                                  elif 'call' in test and test['call'] and 'longrepr' in test['call']:
+                                      skip_reason = str(test['call']['longrepr'])
+                                  skipped_tests_with_reasons[nodeid] = skip_reason.strip()
                               elif outcome == 'xfailed':
                                   xfailed_tests.append(nodeid)
+                                  # Extract xfail reason
+                                  xfail_reason = 'No reason provided'
+                                  if 'longrepr' in test and test['longrepr']:
+                                      longrepr = test['longrepr']
+                                      if isinstance(longrepr, list) and longrepr:
+                                          xfail_reason = str(longrepr[0]) if longrepr[0] else 'No reason provided'
+                                      elif isinstance(longrepr, str):
+                                          xfail_reason = longrepr
+                                  elif 'call' in test and test['call'] and 'longrepr' in test['call']:
+                                      xfail_reason = str(test['call']['longrepr'])
+                                  xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
                       
                       print(f'Debug: Found {len(failing_tests)} failing tests')
                       print(f'Debug: Found {len(skipped_tests)} skipped tests')
                       print(f'Debug: Found {len(xfailed_tests)} xfailed tests')
+                      print(f'Debug: Found {len(all_tests)} total discovered tests')
               else:
                   print('Debug: No valid summary structure found')
               
@@ -339,6 +370,7 @@ jobs:
           print(f'Failing tests: {len(failing_tests)}')
           print(f'Skipped tests: {len(skipped_tests)}')
           print(f'Xfailed tests: {len(xfailed_tests)}')
+          print(f'All discovered tests: {len(all_tests)}')
 
           # Set outputs for GitHub Actions
           print('Debug: Writing results to GITHUB_OUTPUT')
@@ -359,6 +391,19 @@ jobs:
                   f.write(f'xfailed_tests={json.dumps(xfailed_tests)}\\n')
               else:
                   f.write('xfailed_tests=[]\\n')
+              if all_tests:
+                  f.write(f'all_tests={json.dumps(all_tests)}\\n')
+              else:
+                  f.write('all_tests=[]\\n')
+              # Write test reason mappings
+              if skipped_tests_with_reasons:
+                  f.write(f'skipped_tests_with_reasons={json.dumps(skipped_tests_with_reasons)}\\n')
+              else:
+                  f.write('skipped_tests_with_reasons={}\\n')
+              if xfailed_tests_with_reasons:
+                  f.write(f'xfailed_tests_with_reasons={json.dumps(xfailed_tests_with_reasons)}\\n')
+              else:
+                  f.write('xfailed_tests_with_reasons={}\\n')
 
           print('Debug: Results extraction completed')
           "
@@ -380,6 +425,7 @@ jobs:
       error_type: ${{ steps.check-collection.outputs.error_type }}
       error_details: ${{ steps.check-collection.outputs.error_details }}
       passing_tests: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passing_tests || steps.extract-results.outputs.passing_tests }}
+      all_tests: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.all_tests || steps.extract-results.outputs.all_tests }}
 
     steps:
       - name: Checkout target branch
@@ -564,6 +610,7 @@ jobs:
           target_passed = 0
           target_percentage = 0
           passing_tests = []
+          all_tests = []
 
           try:
               print('Debug: Attempting to open target_results.json')
@@ -588,16 +635,19 @@ jobs:
                   target_passed = summary.get('passed', 0)
                   print(f'Debug: Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
                   
-                  # Extract passing tests
+                  # Extract passing tests and all tests
                   if 'tests' in target_results:
-                      print('Debug: Extracting passing tests')
+                      print('Debug: Extracting passing tests and all discovered tests')
                       for test in target_results['tests']:
-                          if test.get('outcome') == 'passed':
-                              nodeid = test.get('nodeid', '')
-                              if nodeid:
+                          outcome = test.get('outcome')
+                          nodeid = test.get('nodeid', '')
+                          if nodeid:
+                              all_tests.append(nodeid)  # Track all tests regardless of outcome
+                              if outcome == 'passed':
                                   passing_tests.append(nodeid)
                       
                       print(f'Debug: Found {len(passing_tests)} passing tests')
+                      print(f'Debug: Found {len(all_tests)} total discovered tests')
               else:
                   print('Debug: No valid summary structure found')
               
@@ -622,6 +672,7 @@ jobs:
           print(f'Passed tests: {target_passed}')
           print(f'Pass percentage: {target_percentage:.2f}%')
           print(f'Passing tests: {len(passing_tests)}')
+          print(f'All discovered tests: {len(all_tests)}')
 
           # Set outputs for GitHub Actions
           print('Debug: Writing results to GITHUB_OUTPUT')
@@ -629,11 +680,15 @@ jobs:
               f.write(f'total={target_total}\\n')
               f.write(f'passed={target_passed}\\n')
               f.write(f'percentage={target_percentage:.2f}\\n')
-              # Write passing tests as a compact JSON string to avoid issues with large outputs
+              # Write test lists as compact JSON strings to avoid issues with large outputs
               if passing_tests:
                   f.write(f'passing_tests={json.dumps(passing_tests)}\\n')
               else:
                   f.write('passing_tests=[]\\n')
+              if all_tests:
+                  f.write(f'all_tests={json.dumps(all_tests)}\\n')
+              else:
+                  f.write('all_tests=[]\\n')
 
           print('Debug: Results extraction completed')
           "
@@ -652,6 +707,7 @@ jobs:
           echo "passed=0" >> $GITHUB_OUTPUT
           echo "percentage=0.00" >> $GITHUB_OUTPUT
           echo "passing_tests=[]" >> $GITHUB_OUTPUT
+          echo "all_tests=[]" >> $GITHUB_OUTPUT
 
   compare-results:
     needs: [test-source-branch, test-target-branch]
@@ -790,7 +846,7 @@ jobs:
           echo "REGRESSION_COUNT=$_regression_count" >> $GITHUB_OUTPUT
 
           if [[ "$_has_regressions" == "true" ]]; then
-            echo "::error::Test Regressions Found: $_regression_count test(s) that were passing in target branch are now failing."
+            echo "::error::Test Regressions Found: $_regression_count test(s) that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`."
             # The regression_details.txt is already cat-ed above if it exists
           else
             # This case handles if _has_regressions is false.
@@ -809,6 +865,7 @@ jobs:
         if: steps.check-regressions.outputs.HAS_REGRESSIONS == 'true' && steps.check-regressions.outputs.REGRESSION_COUNT > 0
         uses: actions/upload-artifact@v4
         with:
+          # The artifact name from reusable-regression-analyzer.yml
           name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
           path: regression_details.txt
           retention-days: 1
@@ -827,15 +884,21 @@ jobs:
               target_passing_str = '''${{ needs.test-target-branch.outputs.passing_tests }}'''
               pr_skipped_str = '''${{ needs.test-source-branch.outputs.skipped_tests }}'''
               pr_xfailed_str = '''${{ needs.test-source-branch.outputs.xfailed_tests }}'''
+              pr_skipped_with_reasons_str = '''${{ needs.test-source-branch.outputs.skipped_tests_with_reasons }}'''
+              pr_xfailed_with_reasons_str = '''${{ needs.test-source-branch.outputs.xfailed_tests_with_reasons }}'''
               
               # Parse JSON 
               target_passing = json.loads(target_passing_str) if target_passing_str and target_passing_str != '[]' else []
               pr_skipped = json.loads(pr_skipped_str) if pr_skipped_str and pr_skipped_str != '[]' else []
               pr_xfailed = json.loads(pr_xfailed_str) if pr_xfailed_str and pr_xfailed_str != '[]' else []
+              pr_skipped_with_reasons = json.loads(pr_skipped_with_reasons_str) if pr_skipped_with_reasons_str and pr_skipped_with_reasons_str != '{}' else {}
+              pr_xfailed_with_reasons = json.loads(pr_xfailed_with_reasons_str) if pr_xfailed_with_reasons_str and pr_xfailed_with_reasons_str != '{}' else {}
               
               print(f"Parsed {len(target_passing)} passing tests from target branch")
               print(f"Parsed {len(pr_skipped)} skipped tests from PR branch")
               print(f"Parsed {len(pr_xfailed)} xfailed tests from PR branch")
+              print(f"Parsed {len(pr_skipped_with_reasons)} skipped tests with reasons")
+              print(f"Parsed {len(pr_xfailed_with_reasons)} xfailed tests with reasons")
               
               # Find tests that were passing in target but are now skipped or xfailed in PR
               target_passing_set = set(target_passing)
@@ -850,22 +913,26 @@ jobs:
               if total_skip_xfail_regressions > 0:
                   print(f"Found {total_skip_xfail_regressions} tests that were passing in target but are now skipped/xfailed in PR!")
                   
-                  warning_message = f"::warning::Skip/XFail Analysis: {total_skip_xfail_regressions} test(s) that were passing in target branch are now being skipped or xfailed in PR branch."
-                  print(warning_message)
+                  # Build comprehensive warning message
+                  warning_parts = [f"Skip/XFail Analysis: {total_skip_xfail_regressions} test(s) that were passing in target branch are now being skipped or xfailed in PR branch."]
                   
                   if passing_to_skipped:
-                      print(f"Tests now SKIPPED ({len(passing_to_skipped)}):")
+                      warning_parts.append(f"Tests now SKIPPED ({len(passing_to_skipped)}):")
                       for idx, test in enumerate(sorted(passing_to_skipped), 1):
-                          print(f"  {idx}. {test}")
+                          reason = pr_skipped_with_reasons.get(test, 'No reason provided')
+                          warning_parts.append(f"  {idx}. {test} - Reason: {reason}")
                   
                   if passing_to_xfailed:
-                      print(f"Tests now XFAILED ({len(passing_to_xfailed)}):")
+                      warning_parts.append(f"Tests now XFAILED ({len(passing_to_xfailed)}):")
                       for idx, test in enumerate(sorted(passing_to_xfailed), 1):
-                          print(f"  {idx}. {test}")
+                          reason = pr_xfailed_with_reasons.get(test, 'No reason provided')
+                          warning_parts.append(f"  {idx}. {test} - Reason: {reason}")
                   
-                  print("")
-                  print("::warning::While these changes don't fail the workflow, they indicate tests that were working before are now being bypassed.")
-                  print("::warning::Please review these tests to ensure this is intentional.")
+                  warning_parts.append("While these changes don't fail the workflow, they indicate tests that were working before are now being bypassed. Please review these tests to ensure this is intentional.")
+                  
+                  # Print as single warning annotation
+                  combined_warning = " ".join(warning_parts)
+                  print(f"::warning::{combined_warning}")
               else:
                   print("No skip/xfail regressions found - all previously passing tests are still running.")
           except Exception as e:
@@ -875,6 +942,82 @@ jobs:
           EOF
 
           echo "Skip/xfail regression analysis completed"
+
+      - name: Check for test additions and removals
+        run: |
+          set -x
+          echo "::debug::Checking for test additions and removals between target and PR branches"
+
+          python3 - << 'EOF'
+          import json
+          import os
+
+          try:
+              # Parse the inputs
+              target_all_str = '''${{ needs.test-target-branch.outputs.all_tests }}'''
+              pr_all_str = '''${{ needs.test-source-branch.outputs.all_tests }}'''
+              
+              # Parse JSON 
+              target_all = json.loads(target_all_str) if target_all_str and target_all_str != '[]' else []
+              pr_all = json.loads(pr_all_str) if pr_all_str and pr_all_str != '[]' else []
+              
+              print(f"Parsed {len(target_all)} total tests from target branch")
+              print(f"Parsed {len(pr_all)} total tests from PR branch")
+              
+              # Find test additions and removals using set operations
+              target_all_set = set(target_all)
+              pr_all_set = set(pr_all)
+              
+              removed_tests = list(target_all_set - pr_all_set)  # In target but not in PR
+              added_tests = list(pr_all_set - target_all_set)    # In PR but not in target
+              
+              # Report removed tests (warnings)
+              if removed_tests:
+                  print(f"Found {len(removed_tests)} tests that were removed from target branch!")
+                  
+                  # Build comprehensive removal warning
+                  removal_parts = [f"Test Removal Analysis: {len(removed_tests)} test(s) that existed in target branch are missing from PR branch."]
+                  removal_parts.append(f"REMOVED Tests ({len(removed_tests)}):")
+                  for idx, test in enumerate(sorted(removed_tests), 1):
+                      removal_parts.append(f"  {idx}. {test}")
+                  removal_parts.append("These test removals should be reviewed to ensure they are intentional. If tests were renamed or moved, this may show as removal + addition.")
+                  
+                  # Print as single warning annotation
+                  combined_removal_warning = " ".join(removal_parts)
+                  print(f"::warning::{combined_removal_warning}")
+              else:
+                  print("No test removals detected.")
+              
+              # Report added tests (notifications/info)
+              if added_tests:
+                  print(f"Found {len(added_tests)} new tests added in PR branch!")
+                  
+                  # Build comprehensive addition notice
+                  addition_parts = [f"Test Addition Analysis: {len(added_tests)} new test(s) have been added in the PR branch."]
+                  addition_parts.append(f"NEW Tests ({len(added_tests)}):")
+                  for idx, test in enumerate(sorted(added_tests), 1):
+                      addition_parts.append(f"  {idx}. {test}")
+                  addition_parts.append("New tests detected - this indicates expanded test coverage!")
+                  
+                  # Print as single notice annotation
+                  combined_addition_notice = " ".join(addition_parts)
+                  print(f"::notice::{combined_addition_notice}")
+              else:
+                  print("No new tests detected in PR branch.")
+              
+              # Summary
+              if not removed_tests and not added_tests:
+                  print("Test suite composition is unchanged between target and PR branches.")
+              else:
+                  print(f"Test suite changes: {len(added_tests)} added, {len(removed_tests)} removed")
+                  
+          except Exception as e:
+              print(f"Error in test addition/removal analysis: {e}")
+              import traceback
+              print(traceback.format_exc())
+          EOF
+
+          echo "Test addition/removal analysis completed"
 
       - name: Compare test results
         run: |
