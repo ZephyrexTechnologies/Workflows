@@ -3,14 +3,6 @@ name: Meta Regression Analysis
 on:
   workflow_call:
     inputs:
-      target_branch_passing_items_json:
-        description: "JSON string array of items considered 'passing' or 'clean' in the target branch."
-        required: true
-        type: string
-      pr_branch_failing_items_json:
-        description: "JSON string array of items considered 'failing' or 'with issues' in the PR branch."
-        required: true
-        type: string
       item_type_singular:
         description: "Singular name for the items being compared (e.g., test, file)."
         required: false
@@ -27,6 +19,14 @@ on:
         type: string
       run_id:
         description: "Current run ID for artifact naming if PR number is not available."
+        required: true
+        type: string
+      target_branch_artifact_name:
+        description: "Name of the artifact containing target branch passing items."
+        required: true
+        type: string
+      pr_branch_artifact_name:
+        description: "Name of the artifact containing PR branch failing items."
         required: true
         type: string
       runs_on:
@@ -51,11 +51,23 @@ jobs:
       HAS_REGRESSIONS: ${{ steps.check-regressions-script.outputs.HAS_REGRESSIONS }}
       REGRESSION_COUNT: ${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
     steps:
+      - name: Download target branch data
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.target_branch_artifact_name }}
+          path: ./target_data
+        continue-on-error: true
+
+      - name: Download PR branch data
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.pr_branch_artifact_name }}
+          path: ./pr_data
+        continue-on-error: true
+
       - name: Run regression analysis script
         id: check-regressions-script
         env:
-          TARGET_PASSING_JSON_ENV: "${{ inputs.target_branch_passing_items_json }}"
-          PR_FAILING_JSON_ENV: "${{ inputs.pr_branch_failing_items_json }}"
           ITEM_TYPE_SINGULAR_ENV: "${{ inputs.item_type_singular }}"
           ITEM_TYPE_PLURAL_ENV: "${{ inputs.item_type_plural }}"
         run: |
@@ -67,8 +79,6 @@ jobs:
           import os
           import sys
 
-          target_passing_str = os.environ.get('TARGET_PASSING_JSON_ENV', '[]')
-          pr_failing_str = os.environ.get('PR_FAILING_JSON_ENV', '[]')
           item_type_s = os.environ.get('ITEM_TYPE_SINGULAR_ENV', 'item')
           item_type_p = os.environ.get('ITEM_TYPE_PLURAL_ENV', 'items')
 
@@ -77,23 +87,34 @@ jobs:
           regression_count_output = 0
 
           try:
-              def load_json_list(json_str, description):
-                  parsed_list = []
-                  if not json_str or json_str.lower() == 'null':
-                      print(f"Debug: {description} JSON string is null or empty, defaulting to empty list.")
+              def load_items_from_file(file_path, description):
+                  """Load items from a JSON file, return empty list if file doesn't exist or is invalid."""
+                  if not os.path.exists(file_path):
+                      print(f"Debug: {description} file not found at {file_path}, defaulting to empty list.")
                       return []
+                  
                   try:
-                      parsed_list = json.loads(json_str)
+                      with open(file_path, 'r') as f:
+                          data = json.load(f)
+                      
+                      if isinstance(data, list):
+                          return data
+                      elif isinstance(data, dict) and 'items' in data:
+                          # Support both direct list format and wrapped format
+                          return data['items'] if isinstance(data['items'], list) else []
+                      else:
+                          print(f"::warning::{description} file does not contain a list or dict with 'items' key. Got {type(data)}. Defaulting to empty list.")
+                          return []
                   except json.JSONDecodeError as e:
-                      print(f"::warning::JSONDecodeError for {description}: {e}. Input string: {json_str[:200]}...")
+                      print(f"::warning::JSONDecodeError for {description}: {e}. Defaulting to empty list.")
                       return []
-                  if not isinstance(parsed_list, list):
-                      print(f"::warning::{description} did not parse to a list, got {type(parsed_list)}. Defaulting to empty list. Value: {str(parsed_list)[:200]}")
+                  except Exception as e:
+                      print(f"::warning::Error reading {description}: {e}. Defaulting to empty list.")
                       return []
-                  return parsed_list
 
-              target_passing = load_json_list(target_passing_str, "Target passing items")
-              pr_failing = load_json_list(pr_failing_str, "PR failing items")
+              # Load data from artifact files
+              target_passing = load_items_from_file('./target_data/passing_items.json', "Target passing items")
+              pr_failing = load_items_from_file('./pr_data/failing_items.json', "PR failing items")
               
               print(f"Parsed {len(target_passing)} passing/clean {item_type_p} from target branch.")
               print(f"Parsed {len(pr_failing)} failing/issue {item_type_p} from PR branch.")

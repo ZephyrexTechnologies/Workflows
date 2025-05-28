@@ -412,6 +412,52 @@ jobs:
           cat $GITHUB_OUTPUT
           echo "PR branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
 
+      - name: Create PR branch test data artifact
+        if: always()
+        run: |
+          set -x
+          echo "Creating PR branch test data for regression analysis..."
+
+          # Create directory for artifact
+          mkdir -p pr_test_data
+
+          # Extract failing tests from outputs and save to JSON file
+          python3 - << 'EOF'
+          import json
+          import os
+
+          # Get failing tests from the step outputs (if available)
+          failing_tests_str = '''${{ steps.extract-results.outputs.failing_tests || '[]' }}'''
+
+          try:
+              if failing_tests_str and failing_tests_str != '[]':
+                  failing_tests = json.loads(failing_tests_str)
+              else:
+                  failing_tests = []
+              
+              print(f"Saving {len(failing_tests)} failing tests to artifact")
+              
+              # Save to JSON file for artifact
+              with open('pr_test_data/failing_items.json', 'w') as f:
+                  json.dump(failing_tests, f, indent=2)
+              
+              print("PR branch test data saved successfully")
+              
+          except Exception as e:
+              print(f"Error saving PR branch test data: {e}")
+              # Create empty file as fallback
+              with open('pr_test_data/failing_items.json', 'w') as f:
+                  json.dump([], f)
+          EOF
+
+      - name: Upload PR branch test data artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
+          path: pr_test_data/
+          retention-days: 1
+
   test-target-branch:
     needs: lint
     runs-on: ${{ inputs.runs_on }}
@@ -697,6 +743,52 @@ jobs:
           cat $GITHUB_OUTPUT
           echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
 
+      - name: Create target branch test data artifact
+        if: always()
+        run: |
+          set -x
+          echo "Creating target branch test data for regression analysis..."
+
+          # Create directory for artifact
+          mkdir -p target_test_data
+
+          # Extract passing tests from outputs and save to JSON file
+          python3 - << 'EOF'
+          import json
+          import os
+
+          # Get passing tests from the step outputs (if available)
+          passing_tests_str = '''${{ steps.extract-results.outputs.passing_tests || steps.set-error-outputs.outputs.passing_tests || '[]' }}'''
+
+          try:
+              if passing_tests_str and passing_tests_str != '[]':
+                  passing_tests = json.loads(passing_tests_str)
+              else:
+                  passing_tests = []
+              
+              print(f"Saving {len(passing_tests)} passing tests to artifact")
+              
+              # Save to JSON file for artifact
+              with open('target_test_data/passing_items.json', 'w') as f:
+                  json.dump(passing_tests, f, indent=2)
+              
+              print("Target branch test data saved successfully")
+              
+          except Exception as e:
+              print(f"Error saving target branch test data: {e}")
+              # Create empty file as fallback
+              with open('target_test_data/passing_items.json', 'w') as f:
+                  json.dump([], f)
+          EOF
+
+      - name: Upload target branch test data artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: target_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
+          path: target_test_data/
+          retention-days: 1
+
       # Add a step to set default outputs when collection errors are detected
       - name: Set collection error outputs
         id: set-error-outputs
@@ -767,6 +859,8 @@ jobs:
           fi
 
       # Split the regression check into separate steps for better control
+      # NOTE: These regression analysis steps are redundant with the perform-regression-analysis job
+      # but are kept for now to ensure backward compatibility. They should be removed in a future cleanup.
       - name: Run regression analysis
         run: |
           set -x
@@ -1146,12 +1240,12 @@ jobs:
     needs: [test-source-branch, test-target-branch]
     uses: ./.github/workflows/meta-regression-analysis.yml
     with:
-      target_branch_passing_items_json: ${{ needs.test-target-branch.outputs.passing_tests }}
-      pr_branch_failing_items_json: ${{ needs.test-source-branch.outputs.failing_tests }}
       item_type_singular: "test"
       item_type_plural: "tests"
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
+      target_branch_artifact_name: target_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
+      pr_branch_artifact_name: pr_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
     # Secrets are not needed for this reusable workflow currently
     # secrets: inherit
 
