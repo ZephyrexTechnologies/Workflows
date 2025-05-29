@@ -82,6 +82,9 @@ jobs:
             # Remove LANDING_ONLY from build args for the normal build
             filtered_args=$(echo "${{ inputs.build_args }}" | sed -E 's/(^|[[:space:]])LANDING_ONLY[^[:space:]]*($|[[:space:]])/\1/g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             echo "filtered_build_args=${filtered_args}" >> $GITHUB_OUTPUT
+            # Ensure LANDING_ONLY=true is properly set for the landing build
+            landing_args=$(echo "${{ inputs.build_args }}" | sed -E 's/LANDING_ONLY[^[:space:]]*/LANDING_ONLY=true/')
+            echo "landing_build_args=${landing_args}" >> $GITHUB_OUTPUT
           else
             echo "has_landing_only=false" >> $GITHUB_OUTPUT
             echo "filtered_build_args=${{ inputs.build_args }}" >> $GITHUB_OUTPUT
@@ -117,6 +120,6 @@ jobs:
           push: true
           tags: ${{ steps.meta_landing.outputs.tags }}
           labels: ${{ steps.meta_landing.outputs.labels }}
-          build-args: ${{ inputs.build_args }}
+          build-args: ${{ steps.check_landing.outputs.landing_build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
