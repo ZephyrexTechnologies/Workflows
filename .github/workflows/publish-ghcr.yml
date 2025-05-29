@@ -92,8 +92,15 @@ jobs:
             echo "Normal build args (LANDING_ONLY removed):"
             echo "$filtered_args"
             
+            # Debug: Show the LANDING_ONLY line specifically
+            echo "LANDING_ONLY line from original:"
+            echo "${{ inputs.build_args }}" | grep "LANDING_ONLY"
+            
             # For landing build: ensure LANDING_ONLY=true is present
-            landing_args=$(echo "${{ inputs.build_args }}" | sed 's/LANDING_ONLY[^[:space:]]*/LANDING_ONLY=true/')
+            # First remove any LANDING_ONLY line, then add LANDING_ONLY=true
+            landing_args=$(echo "${{ inputs.build_args }}" | grep -v "LANDING_ONLY")
+            landing_args="${landing_args}"$'\n'"LANDING_ONLY=true"
+            
             echo "landing_build_args<<EOF" >> $GITHUB_OUTPUT
             echo "$landing_args" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
