@@ -133,7 +133,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ steps.check_landing.outputs.filtered_build_args }}
-          # Temporarily disable cache to verify the fix
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build and push Docker image with LANDING_ONLY
         if: steps.check_landing.outputs.has_landing_only == 'true'
@@ -145,4 +146,5 @@ jobs:
           tags: ${{ steps.meta_landing.outputs.tags }}
           labels: ${{ steps.meta_landing.outputs.labels }}
           build-args: ${{ steps.check_landing.outputs.landing_build_args }}
-          # Temporarily disable cache to verify the fix
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
