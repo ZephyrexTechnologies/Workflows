@@ -74,6 +74,28 @@ jobs:
             # SHA tag (short commit hash)
             type=sha,prefix=,enable=${{ inputs.add_sha_tag == true }}
 
+      - name: Check for LANDING_ONLY build arg
+        id: check_landing
+        run: |
+          if [[ "${{ inputs.build_args }}" == *"LANDING_ONLY"* ]]; then
+            echo "has_landing_only=true" >> $GITHUB_OUTPUT
+            # Remove LANDING_ONLY from build args for the normal build
+            filtered_args=$(echo "${{ inputs.build_args }}" | sed -E 's/(^|[[:space:]])LANDING_ONLY[^[:space:]]*($|[[:space:]])/\1/g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            echo "filtered_build_args=${filtered_args}" >> $GITHUB_OUTPUT
+          else
+            echo "has_landing_only=false" >> $GITHUB_OUTPUT
+            echo "filtered_build_args=${{ inputs.build_args }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract Docker metadata for landing build
+        id: meta_landing
+        if: steps.check_landing.outputs.has_landing_only == 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=landing
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -82,6 +104,19 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ steps.check_landing.outputs.filtered_build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Docker image with LANDING_ONLY
+        if: steps.check_landing.outputs.has_landing_only == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta_landing.outputs.tags }}
+          labels: ${{ steps.meta_landing.outputs.labels }}
           build-args: ${{ inputs.build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
