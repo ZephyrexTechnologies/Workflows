@@ -126,8 +126,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ steps.check_landing.outputs.filtered_build_args }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Temporarily disable cache to verify the fix
 
       - name: Build and push Docker image with LANDING_ONLY
         if: steps.check_landing.outputs.has_landing_only == 'true'
