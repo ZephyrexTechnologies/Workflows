@@ -1,0 +1,141 @@
+name: Reusable - Sync Python Workflows from ZephyrexTechnologies
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      fail_on_error:
+        description: "If true, the job will fail if sync operation fails."
+        required: false
+        type: boolean
+        default: false
+      source_repository:
+        description: "Source repository to sync workflows from"
+        required: false
+        type: string
+        default: "ZephyrexTechnologies/Workflows"
+      target_path:
+        description: "Target path in current repository to sync to"
+        required: false
+        type: string
+        default: ".github/workflows"
+    outputs:
+      files_synced:
+        description: "Whether workflow files were synced and changes pushed."
+        value: ${{ jobs.sync-workflows.outputs.files_synced }}
+
+jobs:
+  sync-workflows:
+    name: Sync Workflow Files
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      files_synced: ${{ steps.push-changes.outputs.pushed }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out current repository
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          token: ${{ github.token }}
+          fetch-depth: 0
+
+      - name: Determine workflow type from meta.json
+        id: determine-type
+        run: |
+          META_FILE=".github/meta.json"
+          DEFAULT_TYPE="python"
+
+          if [ -f "$META_FILE" ]; then
+            echo "Found meta.json file, reading type..."
+            # Extract the type field from meta.json using jq if available, otherwise use grep/sed
+            if command -v jq >/dev/null 2>&1; then
+              WORKFLOW_TYPE=$(jq -r '.type // "'"$DEFAULT_TYPE"'"' "$META_FILE")
+            else
+              # Fallback parsing without jq
+              WORKFLOW_TYPE=$(grep -o '"type"[[:space:]]*:[[:space:]]*"[^"]*"' "$META_FILE" | sed 's/.*"type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || echo "$DEFAULT_TYPE")
+            fi
+            echo "Workflow type from meta.json: $WORKFLOW_TYPE"
+          else
+            echo "No meta.json file found, using default type: $DEFAULT_TYPE"
+            WORKFLOW_TYPE="$DEFAULT_TYPE"
+          fi
+
+          SOURCE_PATH="triggers/$WORKFLOW_TYPE"
+          echo "source_path=$SOURCE_PATH" >> $GITHUB_OUTPUT
+          echo "workflow_type=$WORKFLOW_TYPE" >> $GITHUB_OUTPUT
+          echo "Final source path: $SOURCE_PATH"
+
+      - name: Check out source workflows repository
+        uses: actions/checkout@v4.2.2
+        with:
+          repository: ${{ inputs.source_repository }}
+          path: workflows-source
+          token: ${{ github.token }}
+
+      - name: Sync workflow files
+        id: sync-files
+        run: |
+          SOURCE_PATH="${{ steps.determine-type.outputs.source_path }}"
+          WORKFLOW_TYPE="${{ steps.determine-type.outputs.workflow_type }}"
+
+          echo "Syncing workflow files from ${{ inputs.source_repository }}/$SOURCE_PATH to ${{ inputs.target_path }}"
+          echo "Workflow type: $WORKFLOW_TYPE"
+
+          # Create target directory if it doesn't exist
+          mkdir -p "${{ inputs.target_path }}"
+
+          # Check if source path exists
+          if [ ! -d "workflows-source/$SOURCE_PATH" ]; then
+            echo "::error::Source path workflows-source/$SOURCE_PATH does not exist"
+            if [ "${{ inputs.fail_on_error }}" == "true" ]; then
+              exit 1
+            else
+              echo "Source path not found, skipping sync"
+              exit 0
+            fi
+          fi
+
+          # Copy files from source to target
+          if [ "$(ls -A workflows-source/$SOURCE_PATH)" ]; then
+            echo "Copying files from workflows-source/$SOURCE_PATH to ${{ inputs.target_path }}"
+            cp -r workflows-source/$SOURCE_PATH/* "${{ inputs.target_path }}/"
+            echo "Files copied successfully"
+          else
+            echo "No files found in source directory"
+          fi
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "actions-user"
+          git config --global user.email "actions-user@users.noreply.github.com"
+
+      - name: Commit and push changes
+        id: push-changes
+        run: |
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "pushed=false" >> $GITHUB_OUTPUT
+          else
+            WORKFLOW_TYPE="${{ steps.determine-type.outputs.workflow_type }}"
+            git commit -m "chore: sync $WORKFLOW_TYPE workflow files from ${{ inputs.source_repository }}"
+
+            if [[ -n "$GITHUB_HEAD_REF" ]]; then
+              # We're in a PR context, push to the source branch
+              git push origin HEAD:$GITHUB_HEAD_REF
+            else
+              # Direct branch push
+              git push origin HEAD:${GITHUB_REF#refs/heads/}
+            fi
+            echo "pushed=true" >> $GITHUB_OUTPUT
+            echo "Workflow files synced and changes pushed successfully"
+          fi
+
+      - name: Clean up temporary files
+        run: |
+          rm -rf workflows-source
