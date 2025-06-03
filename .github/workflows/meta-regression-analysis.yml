@@ -22,11 +22,11 @@ on:
         required: true
         type: string
       target_branch_artifact_name:
-        description: "Name of the artifact containing target branch passing items."
+        description: "Name of the artifact containing target branch data."
         required: true
         type: string
       pr_branch_artifact_name:
-        description: "Name of the artifact containing PR branch failing items."
+        description: "Name of the artifact containing PR branch data."
         required: true
         type: string
       runs_on:
@@ -40,7 +40,7 @@ on:
       regression_count:
         description: "Number of regressions found."
         value: ${{ jobs.analyze.outputs.REGRESSION_COUNT }}
-      regression_details_file_name: # Output the file name for clarity
+      regression_details_file_name:
         description: "Name of the artifact file containing regression details."
         value: "regression_details.txt"
 
@@ -81,6 +81,7 @@ jobs:
           import json
           import os
           import sys
+          import glob
 
           item_type_s = os.environ.get('ITEM_TYPE_SINGULAR_ENV', 'item')
           item_type_p = os.environ.get('ITEM_TYPE_PLURAL_ENV', 'items')
@@ -90,34 +91,64 @@ jobs:
           regression_count_output = 0
 
           try:
-              def load_items_from_file(file_path, description):
-                  """Load items from a JSON file, return empty list if file doesn't exist or is invalid."""
-                  if not os.path.exists(file_path):
-                      print(f"{description} file not found at {file_path}, defaulting to empty list.")
-                      return []
+              def load_data_from_artifact_dir(artifact_dir, description):
+                  """Load data from JSON files in artifact directory with properties structure."""
+                  print(f"Looking for data files in {artifact_dir} for {description}")
+                  
+                  # Look for common test data file patterns
+                  json_files = []
+                  for pattern in ['*test_data.json', '*.json']:
+                      json_files.extend(glob.glob(os.path.join(artifact_dir, pattern)))
+                  
+                  if not json_files:
+                      print(f"No JSON files found in {artifact_dir} for {description}")
+                      return {}
+                  
+                  # Use the first JSON file found (should be the main data file)
+                  data_file = json_files[0]
+                  print(f"Loading data from {data_file}")
                   
                   try:
-                      with open(file_path, 'r') as f:
+                      with open(data_file, 'r') as f:
                           data = json.load(f)
-                      
-                      if isinstance(data, list):
-                          return data
-                      elif isinstance(data, dict) and 'items' in data:
-                          # Support both direct list format and wrapped format
-                          return data['items'] if isinstance(data['items'], list) else []
-                      else:
-                          print(f"::warning::{description} file does not contain a list or dict with 'items' key. Got {type(data)}. Defaulting to empty list.")
-                          return []
+                      print(f"Successfully loaded data from {data_file}, keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+                      return data if isinstance(data, dict) else {}
                   except json.JSONDecodeError as e:
-                      print(f"::warning::JSONDecodeError for {description}: {e}. Defaulting to empty list.")
-                      return []
+                      print(f"::warning::JSONDecodeError for {description}: {e}")
+                      return {}
                   except Exception as e:
-                      print(f"::warning::Error reading {description}: {e}. Defaulting to empty list.")
-                      return []
+                      print(f"::warning::Error reading {description}: {e}")
+                      return {}
 
-              # Load data from artifact files
-              target_passing = load_items_from_file('./target_data/passing_items.json', "Target passing items")
-              pr_failing = load_items_from_file('./pr_data/failing_items.json', "PR failing items")
+              # Load data from artifact directories
+              target_data = load_data_from_artifact_dir('./target_data', "Target branch data")
+              pr_data = load_data_from_artifact_dir('./pr_data', "PR branch data")
+              
+              # Extract passing items from target data
+              target_passing = []
+              if isinstance(target_data, dict):
+                  # Try different possible keys for passing items
+                  for key in ['passing_tests', 'passing_items', 'passed_tests', 'passed_items']:
+                      if key in target_data and isinstance(target_data[key], list):
+                          target_passing = target_data[key]
+                          print(f"Found {len(target_passing)} passing {item_type_p} using key '{key}' from target data")
+                          break
+                  
+                  if not target_passing:
+                      print(f"::warning::No passing {item_type_p} found in target data. Available keys: {list(target_data.keys())}")
+              
+              # Extract failing items from PR data  
+              pr_failing = []
+              if isinstance(pr_data, dict):
+                  # Try different possible keys for failing items
+                  for key in ['failing_tests', 'failing_items', 'failed_tests', 'failed_items']:
+                      if key in pr_data and isinstance(pr_data[key], list):
+                          pr_failing = pr_data[key]
+                          print(f"Found {len(pr_failing)} failing {item_type_p} using key '{key}' from PR data")
+                          break
+                  
+                  if not pr_failing:
+                      print(f"::warning::No failing {item_type_p} found in PR data. Available keys: {list(pr_data.keys())}")
               
               print(f"Parsed {len(target_passing)} passing/clean {item_type_p} from target branch.")
               print(f"Parsed {len(pr_failing)} failing/issue {item_type_p} from PR branch.")
