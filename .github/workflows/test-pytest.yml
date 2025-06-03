@@ -105,36 +105,25 @@ jobs:
       - name: Install dependencies
         run: |
           set -x
-          echo "::debug::Upgrading pip with verbose output"
-          python -m pip install --upgrade pip -v
-          echo "::debug::Installing pytest packages with verbose output"
-          pip install -v pytest pytest-json-report pytest-asyncio
-          echo "::debug::Checking for requirements.txt file"
+          python -m pip install --upgrade pip
+          pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
-            echo "::debug::Installing dependencies from requirements.txt with verbose output"
-            pip install -v -r requirements.txt
-          else 
-            echo "::debug::No requirements.txt file found"
+            pip install -r requirements.txt
           fi
 
       - name: Check for test collection errors
         id: check-collection
         run: |
           set -x
-          echo "::debug::Current working directory: $(pwd)"
-          echo "::debug::Listing python files:"
-          find . -name "*.py" | sort
-          echo "::debug::Python version: $(python --version)"
-          echo "::debug::Installed packages:"
-          pip list
+          # Create verbose debug file for artifact
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_collection.log) 2>&1
 
-          echo "::debug::Running pytest in collection mode"
+          echo "Running pytest collection check..."
           python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
 
-          echo "::debug::Collection completed, checking output file"
-          echo "::debug::Collection output file size: $(wc -l collection_output.txt)"
-          echo "::debug::First 50 lines of collection output:"
-          head -n 50 collection_output.txt
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
 
           # Set default values
           HAS_COLLECTION_ERRORS="false"
@@ -142,14 +131,8 @@ jobs:
           ERROR_TYPE="none"
           ERROR_DETAILS="none"
 
-          echo "::debug::Checking for collection errors"
           if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
-            echo "::debug::Collection errors detected, extracting details"
             echo "::error::Test discovery errors detected in PR branch - Python modules could not be imported correctly"
-            
-            # Show what was matched for debugging
-            echo "::debug::Matched error patterns:"
-            grep -n "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt || echo "::debug::No matches found (unexpected)"
             
             # Attempt to identify specific error type
             if grep -q "ImportError" collection_output.txt; then
@@ -166,45 +149,29 @@ jobs:
               ERROR_TYPE="UnknownError"
             fi
             
-            echo "::debug::Error type identified: $ERROR_TYPE"
             echo "PR branch discovery error type: $ERROR_TYPE"
             
-            echo "::debug::Attempting to find specific error file"
             ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
-            echo "::debug::Error file identification result: $ERROR_FILE"
             
             if [[ "$ERROR_FILE" != "Unknown file" ]]; then
               echo "Error in file $ERROR_FILE"
-              echo "::debug::Extracting detailed error information for $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-              echo "::debug::Error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             else
               # If we couldn't find a specific file, get general error info
-              echo "::debug::Extracting general error information"
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-              echo "::debug::General error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             fi
             
             echo "::error::PR branch discovery error details: ${ERROR_DETAILS:0:200}..."
-            echo "::debug::Setting has_collection_errors=true in GitHub output"
             HAS_COLLECTION_ERRORS="true"
           else
-            echo "::debug::No collection errors detected, checking test count"
             echo "No discovery errors detected in PR branch"
             
-            # Additional debugging to see what's in the collection output
-            echo "::debug::Checking collection output for any ERRORS or warnings:"
-            grep -i "error\|warning\|failed" collection_output.txt || echo "::debug::No error/warning patterns found"
-            
-            echo "::debug::Extracting test count from collection output"
             TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
-            echo "::debug::Test count extraction result: $TEST_COUNT"
             
             if [[ "$TEST_COUNT" == "0" ]]; then
               echo "::warning::No tests were found in the PR branch"
-              echo "::debug::Setting no_tests_found=true"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
               ERROR_DETAILS="No test files were discovered that match pytest's test discovery pattern"
@@ -226,29 +193,30 @@ jobs:
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          echo "::debug::Full collection output for debugging:"
-          cat collection_output.txt
+          # Save full collection output to debug file for artifact
+          echo "=== FULL COLLECTION OUTPUT ===" >> debug_collection.log
+          cat collection_output.txt >> debug_collection.log
 
       - name: Run tests on PR Branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
           set -x
-          echo "::debug::Current working directory for test run: $(pwd)"
-          echo "::debug::Listing test files before running:"
-          find . -name "test_*.py" -o -name "*_test.py" | sort
+          # Create verbose debug file for artifact
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_test_run.log) 2>&1
 
-          echo "::debug::Running pytest with json report"
           echo "Running tests on PR branch..."
           python -m pytest -vv --json-report --json-report-file=pr_results.json || true
 
-          echo "::debug::Test run completed, checking if json results file exists"
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           if [ -f pr_results.json ]; then
-            echo "::debug::JSON results file size: $(wc -c pr_results.json)"
-            echo "::debug::JSON results file first 200 characters:"
-            head -c 200 pr_results.json
             echo "Test results file successfully created for PR branch"
+            # Save first 200 chars to debug file only
+            echo "=== JSON RESULTS PREVIEW ===" >> debug_test_run.log
+            head -c 200 pr_results.json >> debug_test_run.log
           else
-            echo "::debug::WARNING: pr_results.json file was not created"
             echo "::error::Failed to create test results file for PR branch"
           fi
 
@@ -256,17 +224,19 @@ jobs:
         id: extract-results
         run: |
           set -x
-          echo "::debug::Current branch: $(git rev-parse --abbrev-ref HEAD)"
           echo "PR_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_ENV
           echo "Processing test results for PR branch: $PR_BRANCH"
 
-          echo "::debug::Running Python script to extract test results"
+          # Create debug file for detailed output
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_extract_results.log) 2>&1
+
           python -c "
           import json
           import sys
           import os
 
-          print('Debug: Starting test results extraction script for PR branch')
+          print('Starting test results extraction script for PR branch')
 
           # Default values in case file doesn't exist or is invalid
           pr_total = 0
@@ -280,19 +250,16 @@ jobs:
           xfailed_tests_with_reasons = {}
 
           try:
-              print('Debug: Attempting to open pr_results.json')
+              print('Attempting to open pr_results.json')
               with open('pr_results.json') as f:
-                  print('Debug: File opened successfully')
                   pr_results = json.load(f)
-                  print(f'Debug: JSON loaded successfully, keys: {list(pr_results.keys())}')
-                  print(f'Debug: Summary key structure: {pr_results[\"summary\"] if \"summary\" in pr_results else \"No summary key\"}')
+                  print(f'JSON loaded successfully, keys: {list(pr_results.keys())}')
               
               # Check for collection errors by looking at exitcode or error patterns
               if pr_results.get('exitcode', 0) > 1:
-                  print('Debug: Detected non-zero exitcode, likely a collection error')
-                  # Let's see if we can extract the error message
+                  print('Detected non-zero exitcode, likely a collection error')
                   if 'collectors' in pr_results and pr_results['collectors']:
-                      print(f'Debug: Collection errors found: {pr_results[\"collectors\"]}')
+                      print(f'Collection errors found: {pr_results[\"collectors\"]}')
                   pr_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   pr_passed = 0
               elif 'summary' in pr_results and isinstance(pr_results['summary'], dict):
@@ -300,11 +267,11 @@ jobs:
                   summary = pr_results['summary']
                   pr_total = summary.get('total', 0)
                   pr_passed = summary.get('passed', 0)
-                  print(f'Debug: Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
+                  print(f'Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
                   
                   # Extract all tests by outcome and collect all test nodeids with reasons
                   if 'tests' in pr_results:
-                      print('Debug: Extracting failing, skipped, xfailed, and all tests with reasons')
+                      print('Extracting failing, skipped, xfailed, and all tests with reasons')
                       for test in pr_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
@@ -340,29 +307,29 @@ jobs:
                                       xfail_reason = str(test['call']['longrepr'])
                                   xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
                       
-                      print(f'Debug: Found {len(failing_tests)} failing tests')
-                      print(f'Debug: Found {len(skipped_tests)} skipped tests')
-                      print(f'Debug: Found {len(xfailed_tests)} xfailed tests')
-                      print(f'Debug: Found {len(all_tests)} total discovered tests')
+                      print(f'Found {len(failing_tests)} failing tests')
+                      print(f'Found {len(skipped_tests)} skipped tests')
+                      print(f'Found {len(xfailed_tests)} xfailed tests')
+                      print(f'Found {len(all_tests)} total discovered tests')
               else:
-                  print('Debug: No valid summary structure found')
+                  print('No valid summary structure found')
               
               # Calculate percentage safely
               pr_percentage = (pr_passed / pr_total * 100) if pr_total > 0 else 0
-              print(f'Debug: Pass percentage calculated: {pr_percentage:.2f}%')
+              print(f'Pass percentage calculated: {pr_percentage:.2f}%')
               
           except FileNotFoundError as e:
-              print(f'Debug: File not found error: {e}')
+              print(f'File not found error: {e}')
           except KeyError as e:
-              print(f'Debug: Missing key in results file: {e}')
+              print(f'Missing key in results file: {e}')
               if 'pr_results' in locals():
-                  print(f'Debug: Available keys: {list(pr_results.keys())}')
+                  print(f'Available keys: {list(pr_results.keys())}')
                   if 'summary' in pr_results:
-                      print(f'Debug: Summary structure: {pr_results[\"summary\"]}')
+                      print(f'Summary structure: {pr_results[\"summary\"]}')
           except Exception as e:
-              print(f'Debug: Error processing results: {e}')
+              print(f'Error processing results: {e}')
               import traceback
-              print(f'Debug: Full exception: {traceback.format_exc()}')
+              print(f'Full exception: {traceback.format_exc()}')
 
           print(f'Total tests: {pr_total}')
           print(f'Passed tests: {pr_passed}')
@@ -373,7 +340,7 @@ jobs:
           print(f'All discovered tests: {len(all_tests)}')
 
           # Set outputs for GitHub Actions
-          print('Debug: Writing results to GITHUB_OUTPUT')
+          print('Writing results to GITHUB_OUTPUT')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'total={pr_total}\\n')
               f.write(f'passed={pr_passed}\\n')
@@ -405,12 +372,26 @@ jobs:
               else:
                   f.write('xfailed_tests_with_reasons={}\\n')
 
-          print('Debug: Results extraction completed')
+          print('Results extraction completed')
           "
 
-          echo "::debug::GITHUB_OUTPUT file content:"
-          cat $GITHUB_OUTPUT
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           echo "PR branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
+
+      - name: Upload PR branch debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr_branch_debug_logs_${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            debug_*.log
+            collection_output.txt
+            error_details.txt
+            pr_results.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Create PR branch test data artifact
         if: always()
@@ -488,36 +469,25 @@ jobs:
       - name: Install dependencies
         run: |
           set -x
-          echo "::debug::Upgrading pip with verbose output"
-          python -m pip install --upgrade pip -v
-          echo "::debug::Installing pytest packages with verbose output"
-          pip install -v pytest pytest-json-report pytest-asyncio
-          echo "::debug::Checking for requirements.txt file"
+          python -m pip install --upgrade pip
+          pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
-            echo "::debug::Installing dependencies from requirements.txt with verbose output"
-            pip install -v -r requirements.txt
-          else 
-            echo "::debug::No requirements.txt file found"
+            pip install -r requirements.txt
           fi
 
       - name: Check for test collection errors
         id: check-collection
         run: |
           set -x
-          echo "::debug::Current working directory: $(pwd)"
-          echo "::debug::Listing python files:"
-          find . -name "*.py" | sort
-          echo "::debug::Python version: $(python --version)"
-          echo "::debug::Installed packages:"
-          pip list
+          # Create verbose debug file for artifact
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_target_collection.log) 2>&1
 
-          echo "::debug::Running pytest in collection mode"
+          echo "Running pytest collection check..."
           python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
 
-          echo "::debug::Collection completed, checking output file"
-          echo "::debug::Collection output file size: $(wc -l collection_output.txt)"
-          echo "::debug::First 50 lines of collection output:"
-          head -n 50 collection_output.txt
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
 
           # Set default values
           HAS_COLLECTION_ERRORS="false"
@@ -525,14 +495,8 @@ jobs:
           ERROR_TYPE="none"
           ERROR_DETAILS="none"
 
-          echo "::debug::Checking for collection errors"
           if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
-            echo "::debug::Collection errors detected, extracting details"
             echo "::warning::Test discovery errors detected in target branch - Python modules could not be imported correctly"
-            
-            # Show what was matched for debugging
-            echo "::debug::Matched error patterns:"
-            grep -n "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt || echo "::debug::No matches found (unexpected)"
             
             # Attempt to identify specific error type
             if grep -q "ImportError" collection_output.txt; then
@@ -549,45 +513,29 @@ jobs:
               ERROR_TYPE="UnknownError"
             fi
             
-            echo "::debug::Error type identified: $ERROR_TYPE"
             echo "Target branch discovery error type: $ERROR_TYPE"
             
-            echo "::debug::Attempting to find specific error file"
             ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
-            echo "::debug::Error file identification result: $ERROR_FILE"
             
             if [[ "$ERROR_FILE" != "Unknown file" ]]; then
               echo "Error in file $ERROR_FILE"
-              echo "::debug::Extracting detailed error information for $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-              echo "::debug::Error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             else
               # If we couldn't find a specific file, get general error info
-              echo "::debug::Extracting general error information"
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-              echo "::debug::General error details extracted (truncated): ${ERROR_DETAILS:0:100}..."
             fi
             
             echo "::warning::Target branch discovery error details: ${ERROR_DETAILS:0:200}..."
-            echo "::debug::Setting has_collection_errors=true in GitHub output"
             HAS_COLLECTION_ERRORS="true"
           else
-            echo "::debug::No collection errors detected, checking test count"
             echo "No discovery errors detected in target branch"
             
-            # Additional debugging to see what's in the collection output
-            echo "::debug::Checking collection output for any ERRORS or warnings:"
-            grep -i "error\|warning\|failed" collection_output.txt || echo "::debug::No error/warning patterns found"
-            
-            echo "::debug::Extracting test count from collection output"
             TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
-            echo "::debug::Test count extraction result: $TEST_COUNT"
             
             if [[ "$TEST_COUNT" == "0" ]]; then
               echo "::warning::No tests were found in the target branch"
-              echo "::debug::Setting no_tests_found=true"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
               ERROR_DETAILS="No test files were discovered in target branch that match pytest's test discovery pattern"
@@ -609,29 +557,30 @@ jobs:
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          echo "::debug::Full collection output for debugging:"
-          cat collection_output.txt
+          # Save full collection output to debug file for artifact
+          echo "=== FULL COLLECTION OUTPUT ===" >> debug_target_collection.log
+          cat collection_output.txt >> debug_target_collection.log
 
       - name: Run tests on target branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
           set -x
-          echo "::debug::Current working directory for test run: $(pwd)"
-          echo "::debug::Listing test files before running:"
-          find . -name "test_*.py" -o -name "*_test.py" | sort
+          # Create verbose debug file for artifact
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_target_test_run.log) 2>&1
 
-          echo "::debug::Running pytest with json report"
           echo "Running tests on target branch..."
           python -m pytest -vv --json-report --json-report-file=target_results.json || true
 
-          echo "::debug::Test run completed, checking if json results file exists"
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           if [ -f target_results.json ]; then
-            echo "::debug::JSON results file size: $(wc -c target_results.json)"
-            echo "::debug::JSON results file first 200 characters:"
-            head -c 200 target_results.json
             echo "Test results file successfully created for target branch"
+            # Save first 200 chars to debug file only
+            echo "=== JSON RESULTS PREVIEW ===" >> debug_target_test_run.log
+            head -c 200 target_results.json >> debug_target_test_run.log
           else
-            echo "::debug::WARNING: target_results.json file was not created"
             echo "::warning::Failed to create test results file for target branch"
           fi
 
@@ -641,15 +590,18 @@ jobs:
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
           set -x
-          echo "::debug::Running Python script to extract test results"
           echo "Processing test results for target branch: ${{ inputs.target_branch_to_compare }}"
+
+          # Create debug file for detailed output
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_target_extract_results.log) 2>&1
 
           python -c "
           import json
           import sys
           import os
 
-          print('Debug: Starting test results extraction script for target branch')
+          print('Starting test results extraction script for target branch')
 
           # Default values in case file doesn't exist or is invalid
           target_total = 0
@@ -659,19 +611,16 @@ jobs:
           all_tests = []
 
           try:
-              print('Debug: Attempting to open target_results.json')
+              print('Attempting to open target_results.json')
               with open('target_results.json') as f:
-                  print('Debug: File opened successfully')
                   target_results = json.load(f)
-                  print(f'Debug: JSON loaded successfully, keys: {list(target_results.keys())}')
-                  print(f'Debug: Summary key structure: {target_results[\"summary\"] if \"summary\" in target_results else \"No summary key\"}')
+                  print(f'JSON loaded successfully, keys: {list(target_results.keys())}')
               
               # Check for collection errors by looking at exitcode or error patterns
               if target_results.get('exitcode', 0) > 1:
-                  print('Debug: Detected non-zero exitcode, likely a collection error')
-                  # Let's see if we can extract the error message
+                  print('Detected non-zero exitcode, likely a collection error')
                   if 'collectors' in target_results and target_results['collectors']:
-                      print(f'Debug: Collection errors found: {target_results[\"collectors\"]}')
+                      print(f'Collection errors found: {target_results[\"collectors\"]}')
                   target_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   target_passed = 0
               elif 'summary' in target_results and isinstance(target_results['summary'], dict):
@@ -679,11 +628,11 @@ jobs:
                   summary = target_results['summary']
                   target_total = summary.get('total', 0)
                   target_passed = summary.get('passed', 0)
-                  print(f'Debug: Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
+                  print(f'Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
                   
                   # Extract passing tests and all tests
                   if 'tests' in target_results:
-                      print('Debug: Extracting passing tests and all discovered tests')
+                      print('Extracting passing tests and all discovered tests')
                       for test in target_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
@@ -692,27 +641,27 @@ jobs:
                               if outcome == 'passed':
                                   passing_tests.append(nodeid)
                       
-                      print(f'Debug: Found {len(passing_tests)} passing tests')
-                      print(f'Debug: Found {len(all_tests)} total discovered tests')
+                      print(f'Found {len(passing_tests)} passing tests')
+                      print(f'Found {len(all_tests)} total discovered tests')
               else:
-                  print('Debug: No valid summary structure found')
+                  print('No valid summary structure found')
               
               # Calculate percentage safely
               target_percentage = (target_passed / target_total * 100) if target_total > 0 else 0
-              print(f'Debug: Pass percentage calculated: {target_percentage:.2f}%')
+              print(f'Pass percentage calculated: {target_percentage:.2f}%')
               
           except FileNotFoundError as e:
-              print(f'Debug: File not found error: {e}')
+              print(f'File not found error: {e}')
           except KeyError as e:
-              print(f'Debug: Missing key in results file: {e}')
+              print(f'Missing key in results file: {e}')
               if 'target_results' in locals():
-                  print(f'Debug: Available keys: {list(target_results.keys())}')
+                  print(f'Available keys: {list(target_results.keys())}')
                   if 'summary' in target_results:
-                      print(f'Debug: Summary structure: {target_results[\"summary\"]}')
+                      print(f'Summary structure: {target_results[\"summary\"]}')
           except Exception as e:
-              print(f'Debug: Error processing results: {e}')
+              print(f'Error processing results: {e}')
               import traceback
-              print(f'Debug: Full exception: {traceback.format_exc()}')
+              print(f'Full exception: {traceback.format_exc()}')
 
           print(f'Total tests: {target_total}')
           print(f'Passed tests: {target_passed}')
@@ -721,7 +670,7 @@ jobs:
           print(f'All discovered tests: {len(all_tests)}')
 
           # Set outputs for GitHub Actions
-          print('Debug: Writing results to GITHUB_OUTPUT')
+          print('Writing results to GITHUB_OUTPUT')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'total={target_total}\\n')
               f.write(f'passed={target_passed}\\n')
@@ -736,12 +685,26 @@ jobs:
               else:
                   f.write('all_tests=[]\\n')
 
-          print('Debug: Results extraction completed')
+          print('Results extraction completed')
           "
 
-          echo "::debug::GITHUB_OUTPUT file content:"
-          cat $GITHUB_OUTPUT
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
+
+      - name: Upload target branch debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: target_branch_debug_logs_${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            debug_target_*.log
+            collection_output.txt
+            error_details.txt
+            target_results.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Create target branch test data artifact
         if: always()
@@ -811,29 +774,32 @@ jobs:
     steps:
       - name: Install bc
         run: |
-          set -x
-          echo "::debug::Installing bc package for numeric comparison"
           sudo apt-get update -y
           sudo apt-get install -y bc
 
       - name: Check for collection errors
         run: |
-          set -x
-          echo "::debug::Retrieving collection error status information"
+          # Create analysis debug file
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_comparison_analysis.log) 2>&1
+
+          echo "Retrieving collection error status information"
           PR_COLLECTION_ERRORS="${{ needs.test-source-branch.outputs.collection_errors }}"
           PR_NO_TESTS="${{ needs.test-source-branch.outputs.no_tests_found }}"
           PR_ERROR_TYPE="${{ needs.test-source-branch.outputs.error_type }}"
           PR_ERROR_DETAILS="${{ needs.test-source-branch.outputs.error_details }}"
           TARGET_COLLECTION_ERRORS="${{ needs.test-target-branch.outputs.collection_errors }}"
 
-          echo "::debug::PR branch collection errors: $PR_COLLECTION_ERRORS"
-          echo "::debug::PR branch no tests found: $PR_NO_TESTS"
-          echo "::debug::PR branch error type: $PR_ERROR_TYPE"
-          echo "::debug::Target branch collection errors: $TARGET_COLLECTION_ERRORS"
+          echo "PR branch collection errors: $PR_COLLECTION_ERRORS"
+          echo "PR branch no tests found: $PR_NO_TESTS"
+          echo "PR branch error type: $PR_ERROR_TYPE"
+          echo "Target branch collection errors: $TARGET_COLLECTION_ERRORS"
+
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
 
           # Distinct error handling for PR branch
           if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
-            echo "::debug::PR branch has discovery errors, failing workflow"
             echo "::error::Test discovery errors in PR branch: $PR_ERROR_TYPE"
             echo "::error::$PR_ERROR_DETAILS"
             echo "❌ PR branch has test discovery errors. Python modules could not be imported correctly."
@@ -841,7 +807,6 @@ jobs:
           fi
 
           if [[ "$PR_NO_TESTS" == "true" ]]; then
-            echo "::debug::PR branch has no tests, failing workflow"
             echo "::error::No tests were found in the PR branch"
             echo "❌ PR branch has no tests detected. Please add test files that match pytest's discovery pattern."
             exit 1
@@ -849,12 +814,10 @@ jobs:
 
           # Warning for target branch issues (not a failure)
           if [[ "$TARGET_COLLECTION_ERRORS" == "true" ]]; then
-            echo "::debug::Target branch has discovery errors, displaying warning"
             echo "⚠️ Target branch has test discovery errors. Tests will still be compared but results may not be accurate."
           fi
 
           if [[ "${{ needs.test-target-branch.outputs.no_tests_found }}" == "true" ]]; then
-            echo "::debug::Target branch has no tests, displaying warning"
             echo "⚠️ Target branch has no tests detected. PR branch tests will still be evaluated."
           fi
 
@@ -863,7 +826,10 @@ jobs:
       # but are kept for now to ensure backward compatibility. They should be removed in a future cleanup.
       - name: Run regression analysis
         run: |
-          set -x
+          # Create analysis debug file
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_regression_analysis.log) 2>&1
+
           echo "Running regression analysis..."
 
           python3 - << 'EOF'
@@ -904,12 +870,14 @@ jobs:
               print(traceback.format_exc())
           EOF
 
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           echo "Regression analysis completed"
 
       - name: Check for regression details file
         id: check-regressions
         run: |
-          set -x
           _has_regressions="false"
           _regression_count="0"
 
@@ -922,14 +890,14 @@ jobs:
             if [ "$_current_count" -gt 0 ]; then
               _has_regressions="true"
               _regression_count="$_current_count"
+              echo "::error::Test Regressions Found: $_regression_count test(s) that were passing in target branch are now **failing** in PR branch."
+              echo "Regression details:"
+              cat regression_details.txt
             else
               # File exists but no regressions counted (e.g. empty or malformed)
               _has_regressions="false"
               _regression_count="0"
             fi
-            
-            echo "Regression details:"
-            cat regression_details.txt
           else
             echo "No regression details file found - no regressions detected"
             _has_regressions="false"
@@ -939,18 +907,10 @@ jobs:
           echo "HAS_REGRESSIONS=$_has_regressions" >> $GITHUB_OUTPUT
           echo "REGRESSION_COUNT=$_regression_count" >> $GITHUB_OUTPUT
 
-          if [[ "$_has_regressions" == "true" ]]; then
-            echo "::error::Test Regressions Found: $_regression_count test(s) that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`."
-            # The regression_details.txt is already cat-ed above if it exists
-          else
-            # This case handles if _has_regressions is false.
-            # Check if file exists unexpectedly (e.g., created but empty of actual regression lines)
+          if [[ "$_has_regressions" == "false" ]]; then
             if [ -f regression_details.txt ] && [ "$_has_regressions" == "false" ]; then
-               # This condition means regression_details.txt was found, but _current_count was 0 or it wasn't found.
-               # The initial cat of regression_details.txt would have shown its content.
                echo "::notice::Regression details file (regression_details.txt) was found but no valid regression entries were counted by this step, or the file was empty."
             else
-               # This means regression_details.txt was not found at all.
                echo "No test regressions detected by this step."
             fi
           fi
@@ -966,8 +926,11 @@ jobs:
 
       - name: Check for skip/xfail regressions
         run: |
-          set -x
-          echo "::debug::Checking for tests that were passing in target but are now skipped or xfailed in PR"
+          # Create analysis debug file
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_skip_xfail_analysis.log) 2>&1
+
+          echo "Checking for tests that were passing in target but are now skipped or xfailed in PR"
 
           python3 - << 'EOF'
           import json
@@ -1035,12 +998,18 @@ jobs:
               print(traceback.format_exc())
           EOF
 
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           echo "Skip/xfail regression analysis completed"
 
       - name: Check for test additions and removals
         run: |
-          set -x
-          echo "::debug::Checking for test additions and removals between target and PR branches"
+          # Create analysis debug file
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_test_changes_analysis.log) 2>&1
+
+          echo "Checking for test additions and removals between target and PR branches"
 
           python3 - << 'EOF'
           import json
@@ -1111,34 +1080,23 @@ jobs:
               print(traceback.format_exc())
           EOF
 
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
           echo "Test addition/removal analysis completed"
 
       - name: Compare test results
         run: |
-          set -x
-          echo "::debug::Starting detailed test results comparison"
-
-          # Print all input values for debugging
-          echo "::debug::Target branch total: ${{ needs.test-target-branch.outputs.total }}"
-          echo "::debug::Target branch passed: ${{ needs.test-target-branch.outputs.passed }}"
-          echo "::debug::Target branch percentage: ${{ needs.test-target-branch.outputs.percentage }}"
-          echo "::debug::PR branch total: ${{ needs.test-source-branch.outputs.total }}"
-          echo "::debug::PR branch passed: ${{ needs.test-source-branch.outputs.passed }}"
-          echo "::debug::PR branch percentage: ${{ needs.test-source-branch.outputs.percentage }}"
-
           echo "Test Results Summary:"
           echo "Target branch (${{ inputs.target_branch_to_compare }}): ${{ needs.test-target-branch.outputs.passed }}/${{ needs.test-target-branch.outputs.total }} tests passed (${{ needs.test-target-branch.outputs.percentage }}%)"
           echo "PR branch: ${{ needs.test-source-branch.outputs.passed }}/${{ needs.test-source-branch.outputs.total }} tests passed (${{ needs.test-source-branch.outputs.percentage }}%)"
 
-          echo "::debug::Checking if PR branch has tests"
           if [[ "${{ needs.test-source-branch.outputs.total }}" == "0" ]]; then
-            echo "::debug::PR branch has no tests, failing workflow"
             echo "::error::No tests were found in the PR branch"
             echo "❌ PR branch has no tests detected. Please add test files that match pytest's discovery pattern."
             exit 1
           fi
 
-          echo "::debug::Converting string outputs to variables for comparison"
           PR_PASSED=${{ needs.test-source-branch.outputs.passed }}
           TARGET_PASSED=${{ needs.test-target-branch.outputs.passed }}
           PR_PERCENTAGE=${{ needs.test-source-branch.outputs.percentage }}
@@ -1146,18 +1104,8 @@ jobs:
           PR_TOTAL=${{ needs.test-source-branch.outputs.total }}
           TARGET_TOTAL=${{ needs.test-target-branch.outputs.total }}
 
-          echo "::debug::PR_PASSED=$PR_PASSED"
-          echo "::debug::TARGET_PASSED=$TARGET_PASSED"
-          echo "::debug::PR_PERCENTAGE=$PR_PERCENTAGE"
-          echo "::debug::TARGET_PERCENTAGE=$TARGET_PERCENTAGE"
-          echo "::debug::PR_TOTAL=$PR_TOTAL"
-          echo "::debug::TARGET_TOTAL=$TARGET_TOTAL"
-          echo "::debug::HAS_REGRESSIONS=${{ needs.perform-regression-analysis.outputs.has_regressions }}"
-          echo "::debug::REGRESSION_COUNT=${{ needs.perform-regression-analysis.outputs.regression_count }}"
-
           # Handle case where target has no tests
           if [[ "$TARGET_TOTAL" == "0" ]]; then
-            echo "::debug::Target branch has no tests, checking PR branch tests only"
             if [[ "$PR_PASSED" -gt 0 ]]; then
               echo "✅ PR branch has tests and some are passing (target branch has no tests)"
               exit 0
@@ -1188,13 +1136,8 @@ jobs:
             exit 1
           fi
 
-          echo "::debug::Performing comparison with bc"
-          echo "::debug::Comparing passed tests: $(echo "$PR_PASSED >= $TARGET_PASSED" | bc -l)"
-          echo "::debug::Comparing pass percentage: $(echo "$PR_PERCENTAGE >= $TARGET_PERCENTAGE" | bc -l)"
-
           # Continue with the original comparison if no regressions
           if (( $(echo "$PR_PASSED >= $TARGET_PASSED" | bc -l) )) && (( $(echo "$PR_PERCENTAGE >= $TARGET_PERCENTAGE" | bc -l) )); then
-            echo "::debug::PR branch has equal or better results"
             echo "✅ PR branch has equal or better test results than target branch"
             
             # Additional verbose information about improvement
@@ -1210,7 +1153,6 @@ jobs:
             
             exit 0
           else
-            echo "::debug::PR branch has worse results"
             echo "❌ PR branch has worse test results than target branch"
             echo "  - Passed tests: $PR_PASSED vs $TARGET_PASSED on target branch"
             echo "  - Pass percentage: $PR_PERCENTAGE% vs $TARGET_PERCENTAGE% on target branch"
@@ -1235,6 +1177,15 @@ jobs:
             
             exit 1
           fi
+
+      - name: Upload comparison analysis logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comparison_analysis_logs_${{ github.event.pull_request.number || github.run_id }}
+          path: debug_*_analysis.log
+          retention-days: 3
+          if-no-files-found: ignore
 
   perform-regression-analysis:
     needs: [test-source-branch, test-target-branch]
@@ -1330,12 +1281,16 @@ jobs:
           DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
           INPUT_PING_LATEST_COMMITTER: ${{ inputs.ping_latest_committer }}
         run: |
+          # Create debug file for detailed notification construction
+          exec 3>&1 4>&2
+          exec 1> >(tee -a debug_notification_construction.log) 2>&1
+
           MESSAGE_LINES=() # Use an array to build message lines
           PING_KEYS_OUTPUT="" # Will be comma-separated GitHub logins
           ARTIFACT_PATH_OUTPUT=""
 
-          echo "Debug: Raw GH_ASSIGNEES_JSON value: [$GH_ASSIGNEES_JSON]"
-          echo "Debug: Raw USER_MAP_JSON value: [$USER_MAP_JSON]"
+          echo "Raw GH_ASSIGNEES_JSON value: [$GH_ASSIGNEES_JSON]"
+          echo "Raw USER_MAP_JSON value: [$USER_MAP_JSON]"
 
           # 1. Determine Pings - Collect GitHub Logins to pass to alert-discord.yml
           # Initialize PING_KEYS_OUTPUT
@@ -1344,48 +1299,46 @@ jobs:
           # Add assignees to PING_KEYS_OUTPUT
           if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && command -v jq &> /dev/null; then
             ASSIGNEE_LOGINS_ARRAY=($(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty'))
-            echo "Debug: GH_ASSIGNEES_JSON received: $GH_ASSIGNEES_JSON"
-            echo "Debug: Extracted ASSIGNEE_LOGINS_ARRAY: (${ASSIGNEE_LOGINS_ARRAY[*]})"
-            echo "Debug: Count of assignees extracted: ${#ASSIGNEE_LOGINS_ARRAY[@]}"
+            echo "GH_ASSIGNEES_JSON received: $GH_ASSIGNEES_JSON"
+            echo "Extracted ASSIGNEE_LOGINS_ARRAY: (${ASSIGNEE_LOGINS_ARRAY[*]})"
+            echo "Count of assignees extracted: ${#ASSIGNEE_LOGINS_ARRAY[@]}"
 
             MAPPED_ASSIGNEE_COUNT=0
             TEMP_PING_KEYS=()
 
             for assignee_login in "${ASSIGNEE_LOGINS_ARRAY[@]}"; do
               if [ -z "$assignee_login" ]; then
-                echo "Debug: Skipping empty assignee login."
+                echo "Skipping empty assignee login."
                 continue
               fi
-              echo "Debug: Processing assignee for ping: '$assignee_login'"
+              echo "Processing assignee for ping: '$assignee_login'"
               # Check if this assignee_login exists as a key in USER_MAP_JSON
-              # The jq query '.\"$assignee_login\"' will attempt to access the key. If it exists, it returns the value, otherwise null.
-              # We use -e to set exit code 0 if last output was not null, 1 if null or not found.
               if echo "$USER_MAP_JSON" | jq -e --arg K "$assignee_login" '.[$K]' > /dev/null; then
-                echo "Debug: Assignee '$assignee_login' FOUND in USER_MAP_JSON."
+                echo "Assignee '$assignee_login' FOUND in USER_MAP_JSON."
                 TEMP_PING_KEYS+=("$assignee_login")
                 MAPPED_ASSIGNEE_COUNT=$((MAPPED_ASSIGNEE_COUNT + 1))
               else
-                echo "Debug: Assignee '$assignee_login' NOT FOUND in USER_MAP_JSON."
+                echo "Assignee '$assignee_login' NOT FOUND in USER_MAP_JSON."
               fi
             done
 
-            echo "Debug: Total assignees found in USER_MAP_JSON and added to pings: $MAPPED_ASSIGNEE_COUNT"
+            echo "Total assignees found in USER_MAP_JSON and added to pings: $MAPPED_ASSIGNEE_COUNT"
 
             if [ ${#TEMP_PING_KEYS[@]} -gt 0 ]; then
               PING_KEYS_OUTPUT=$(IFS=,; echo "${TEMP_PING_KEYS[*]}")
-              echo "Debug: Initial PING_KEYS_OUTPUT from assignees: [$PING_KEYS_OUTPUT]"
+              echo "Initial PING_KEYS_OUTPUT from assignees: [$PING_KEYS_OUTPUT]"
             else
-              echo "Debug: No assignees found or GH_ASSIGNEES_JSON was empty, or no assignees were found in USER_MAP_JSON."
+              echo "No assignees found or GH_ASSIGNEES_JSON was empty, or no assignees were found in USER_MAP_JSON."
             fi
           elif [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && ! command -v jq &> /dev/null; then
             echo "::warning::jq is not available. Cannot determine GitHub users (assignees) for pings."
           else
-            echo "Debug: No user map JSON or jq not found. PING_KEYS_OUTPUT (from assignees) will be empty."
+            echo "No user map JSON or jq not found. PING_KEYS_OUTPUT (from assignees) will be empty."
           fi
 
           # Add latest committer if INPUT_PING_LATEST_COMMITTER is true
           if [[ "$INPUT_PING_LATEST_COMMITTER" == "true" ]]; then
-            echo "Debug: INPUT_PING_LATEST_COMMITTER is true. Attempting to fetch latest committer for PR #${PR_NUMBER}."
+            echo "INPUT_PING_LATEST_COMMITTER is true. Attempting to fetch latest committer for PR #${PR_NUMBER}."
             if command -v gh &> /dev/null && [ -n "$PR_NUMBER" ]; then
               LATEST_COMMITTER_LOGIN_RAW=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].author.login' 2>/dev/null || echo "")
               
@@ -1394,7 +1347,7 @@ jobs:
                 LATEST_COMMITTER_LOGIN=$(echo "$LATEST_COMMITTER_LOGIN_RAW" | grep -v -E -i '(\[bot\]$|-bot$)' || echo "")
                 
                 if [ -n "$LATEST_COMMITTER_LOGIN" ]; then
-                  echo "Debug: Latest committer identified: $LATEST_COMMITTER_LOGIN"
+                  echo "Latest committer identified: $LATEST_COMMITTER_LOGIN"
                   
                   # Check if this committer is already in PING_KEYS_OUTPUT
                   ALREADY_IN_LIST=0
@@ -1414,15 +1367,15 @@ jobs:
                     else
                       PING_KEYS_OUTPUT="$PING_KEYS_OUTPUT,$LATEST_COMMITTER_LOGIN"
                     fi
-                    echo "Debug: Added latest committer '$LATEST_COMMITTER_LOGIN' to PING_KEYS_OUTPUT. New list: [$PING_KEYS_OUTPUT]"
+                    echo "Added latest committer '$LATEST_COMMITTER_LOGIN' to PING_KEYS_OUTPUT. New list: [$PING_KEYS_OUTPUT]"
                   else
-                    echo "Debug: Latest committer '$LATEST_COMMITTER_LOGIN' is already in PING_KEYS_OUTPUT (likely an assignee)."
+                    echo "Latest committer '$LATEST_COMMITTER_LOGIN' is already in PING_KEYS_OUTPUT (likely an assignee)."
                   fi
                 else
-                  echo "Debug: Latest committer login '$LATEST_COMMITTER_LOGIN_RAW' was filtered out (likely a bot or pattern match) or empty after filter."
+                  echo "Latest committer login '$LATEST_COMMITTER_LOGIN_RAW' was filtered out (likely a bot or pattern match) or empty after filter."
                 fi
               else
-                echo "Debug: No latest committer login found for PR #$PR_NUMBER from gh command, or login was null."
+                echo "No latest committer login found for PR #$PR_NUMBER from gh command, or login was null."
               fi
             else
               if ! command -v gh &> /dev/null; then
@@ -1434,6 +1387,9 @@ jobs:
             fi
           fi
 
+          # Restore stdout/stderr for GitHub Actions to show final summary
+          exec 1>&3 2>&4
+
           # Make this a standard echo for better visibility of the final list
           echo "Final Ping Keys Output (GitHub Logins from test-pytest.yml): [$PING_KEYS_OUTPUT]"
           echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
@@ -1442,7 +1398,7 @@ jobs:
           PR_BRANCH="${PR_BRANCH_NAME:-unknown}"
           TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
 
-          # 2. Construct Message Body - TEMPORARILY SIMPLIFIED FOR NEWLINE DEBUGGING
+          # 2. Construct Message Body
           MESSAGE_LINES+=("**Pytest Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
           MESSAGE_LINES+=("Branch: [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) against [\`${TARGET_BRANCH}\`](${REPO_URL}/tree/${TARGET_BRANCH})")
           MESSAGE_LINES+=("---")
@@ -1516,7 +1472,6 @@ jobs:
             fi
           elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
             # This case handles general comparison failures NOT due to specific regressions
-            # (e.g. PR has fewer tests passing overall, but not necessarily ones that *were* passing on target)
             MESSAGE_LINES+=("**:warning: TEST RESULTS DECLINED**")
             MESSAGE_LINES+=("  - The PR branch shows a decrease in test success compared to the target branch, but no specific regressions were identified by the \`meta-regression-analysis\` job.")
             MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
@@ -1537,15 +1492,22 @@ jobs:
             FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
           fi
 
-          echo "::debug::Final message body prepared in test-pytest.yml (with actual newlines):"
-          echo "$FINAL_MESSAGE_BODY"
-          echo "$FINAL_MESSAGE_BODY" | cat -A # Show with non-printables
+          echo "Final message body prepared in test-pytest.yml"
 
           echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
+
+      - name: Upload notification construction debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notification_debug_logs_${{ github.event.pull_request.number || github.run_id }}
+          path: debug_notification_construction.log
+          retention-days: 3
+          if-no-files-found: ignore
 
   # Even if webhook checks are handled inside the alert workflow,
   # we still need to pass the secret to satisfy GitHub's workflow validation
