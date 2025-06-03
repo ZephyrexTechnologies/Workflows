@@ -145,12 +145,12 @@ jobs:
             if [[ "$ERROR_FILE" != "Unknown file" ]]; then
               echo "Error in file $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
-              # Truncate to 500 chars for GitHub output, full details go to artifact
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
+              # Truncate to 200 chars for GitHub output, full details go to artifact
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-200)
             else
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
-              # Truncate to 500 chars for GitHub output, full details go to artifact  
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
+              # Truncate to 200 chars for GitHub output, full details go to artifact  
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-200)
             fi
             
             echo "::error::PR branch discovery error details (truncated): ${ERROR_DETAILS}..."
@@ -224,8 +224,6 @@ jobs:
           import sys
           import os
 
-          print('Starting test results extraction script for PR branch')
-
           # Default values in case file doesn't exist or is invalid
           pr_total = 0
           pr_passed = 0
@@ -238,16 +236,11 @@ jobs:
           xfailed_tests_with_reasons = {}
 
           try:
-              print('Attempting to open pr_results.json')
               with open('pr_results.json') as f:
                   pr_results = json.load(f)
-                  print(f'JSON loaded successfully, keys: {list(pr_results.keys())}')
               
               # Check for collection errors by looking at exitcode or error patterns
               if pr_results.get('exitcode', 0) > 1:
-                  print('Detected non-zero exitcode, likely a collection error')
-                  if 'collectors' in pr_results and pr_results['collectors']:
-                      print(f'Collection errors found: {pr_results[\"collectors\"]}')
                   pr_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   pr_passed = 0
               elif 'summary' in pr_results and isinstance(pr_results['summary'], dict):
@@ -255,11 +248,9 @@ jobs:
                   summary = pr_results['summary']
                   pr_total = summary.get('total', 0)
                   pr_passed = summary.get('passed', 0)
-                  print(f'Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
                   
                   # Extract all tests by outcome and collect all test nodeids with reasons
                   if 'tests' in pr_results:
-                      print('Extracting failing, skipped, xfailed, and all tests with reasons')
                       for test in pr_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
@@ -294,38 +285,12 @@ jobs:
                                   elif 'call' in test and test['call'] and 'longrepr' in test['call']:
                                       xfail_reason = str(test['call']['longrepr'])
                                   xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
-                      
-                      print(f'Found {len(failing_tests)} failing tests')
-                      print(f'Found {len(skipped_tests)} skipped tests')
-                      print(f'Found {len(xfailed_tests)} xfailed tests')
-                      print(f'Found {len(all_tests)} total discovered tests')
-              else:
-                  print('No valid summary structure found')
               
               # Calculate percentage safely
               pr_percentage = (pr_passed / pr_total * 100) if pr_total > 0 else 0
-              print(f'Pass percentage calculated: {pr_percentage:.2f}%')
               
-          except FileNotFoundError as e:
-              print(f'File not found error: {e}')
-          except KeyError as e:
-              print(f'Missing key in results file: {e}')
-              if 'pr_results' in locals():
-                  print(f'Available keys: {list(pr_results.keys())}')
-                  if 'summary' in pr_results:
-                      print(f'Summary structure: {pr_results[\"summary\"]}')
           except Exception as e:
-              print(f'Error processing results: {e}')
-              import traceback
-              print(f'Full exception: {traceback.format_exc()}')
-
-          print(f'Total tests: {pr_total}')
-          print(f'Passed tests: {pr_passed}')
-          print(f'Pass percentage: {pr_percentage:.2f}%')
-          print(f'Failing tests: {len(failing_tests)}')
-          print(f'Skipped tests: {len(skipped_tests)}')
-          print(f'Xfailed tests: {len(xfailed_tests)}')
-          print(f'All discovered tests: {len(all_tests)}')
+              pass  # Use defaults on any error
 
           # Set scalar outputs only (no large arrays)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -348,15 +313,12 @@ jobs:
 
           with open('pr_test_data.json', 'w') as f:
               json.dump(test_data, f, indent=2)
-
-          print('Test data saved to pr_test_data.json for artifact')
-          print('Results extraction completed')
           "
 
           # Restore stdout/stderr for GitHub Actions
           exec 1>&3 2>&4
 
-          echo "PR branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
+          echo "PR branch test results processed"
 
       - name: Upload PR branch artifacts
         if: always()
@@ -450,12 +412,12 @@ jobs:
             if [[ "$ERROR_FILE" != "Unknown file" ]]; then
               echo "Error in file $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
-              # Truncate to 500 chars for GitHub output, full details go to artifact
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
+              # Truncate to 200 chars for GitHub output, full details go to artifact
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-200)
             else
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
-              # Truncate to 500 chars for GitHub output, full details go to artifact  
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
+              # Truncate to 200 chars for GitHub output, full details go to artifact  
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-200)
             fi
             
             echo "::warning::Target branch discovery error details (truncated): ${ERROR_DETAILS}..."
@@ -530,8 +492,6 @@ jobs:
           import sys
           import os
 
-          print('Starting test results extraction script for target branch')
-
           # Default values in case file doesn't exist or is invalid
           target_total = 0
           target_passed = 0
@@ -540,16 +500,11 @@ jobs:
           all_tests = []
 
           try:
-              print('Attempting to open target_results.json')
               with open('target_results.json') as f:
                   target_results = json.load(f)
-                  print(f'JSON loaded successfully, keys: {list(target_results.keys())}')
               
               # Check for collection errors by looking at exitcode or error patterns
               if target_results.get('exitcode', 0) > 1:
-                  print('Detected non-zero exitcode, likely a collection error')
-                  if 'collectors' in target_results and target_results['collectors']:
-                      print(f'Collection errors found: {target_results[\"collectors\"]}')
                   target_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   target_passed = 0
               elif 'summary' in target_results and isinstance(target_results['summary'], dict):
@@ -557,11 +512,9 @@ jobs:
                   summary = target_results['summary']
                   target_total = summary.get('total', 0)
                   target_passed = summary.get('passed', 0)
-                  print(f'Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
                   
                   # Extract passing tests and all tests
                   if 'tests' in target_results:
-                      print('Extracting passing tests and all discovered tests')
                       for test in target_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
@@ -569,34 +522,12 @@ jobs:
                               all_tests.append(nodeid)  # Track all tests regardless of outcome
                               if outcome == 'passed':
                                   passing_tests.append(nodeid)
-                      
-                      print(f'Found {len(passing_tests)} passing tests')
-                      print(f'Found {len(all_tests)} total discovered tests')
-              else:
-                  print('No valid summary structure found')
               
               # Calculate percentage safely
               target_percentage = (target_passed / target_total * 100) if target_total > 0 else 0
-              print(f'Pass percentage calculated: {target_percentage:.2f}%')
               
-          except FileNotFoundError as e:
-              print(f'File not found error: {e}')
-          except KeyError as e:
-              print(f'Missing key in results file: {e}')
-              if 'target_results' in locals():
-                  print(f'Available keys: {list(target_results.keys())}')
-                  if 'summary' in target_results:
-                      print(f'Summary structure: {target_results[\"summary\"]}')
           except Exception as e:
-              print(f'Error processing results: {e}')
-              import traceback
-              print(f'Full exception: {traceback.format_exc()}')
-
-          print(f'Total tests: {target_total}')
-          print(f'Passed tests: {target_passed}')
-          print(f'Pass percentage: {target_percentage:.2f}%')
-          print(f'Passing tests: {len(passing_tests)}')
-          print(f'All discovered tests: {len(all_tests)}')
+              pass  # Use defaults on any error
 
           # Set scalar outputs only (no large arrays)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -613,15 +544,12 @@ jobs:
 
           with open('target_test_data.json', 'w') as f:
               json.dump(test_data, f, indent=2)
-
-          print('Test data saved to target_test_data.json for artifact')
-          print('Results extraction completed')
           "
 
           # Restore stdout/stderr for GitHub Actions
           exec 1>&3 2>&4
 
-          echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
+          echo "Target branch test results processed"
 
       - name: Upload target branch artifacts
         if: always()
