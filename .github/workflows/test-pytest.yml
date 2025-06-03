@@ -192,18 +192,25 @@ jobs:
           MIGRATION_MANAGER_QUIET: "true"
           SQLALCHEMY_WARN_20: "false"
           SQLALCHEMY_SILENCE_UBER_WARNING: "1"
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          PYTEST_CURRENT_TEST: ""
         run: |
           echo "Running tests on PR branch..."
 
-          # Suppress Python logging and redirect all output
-          python -c "import logging; logging.getLogger().setLevel(logging.ERROR); logging.getLogger('migration_manager').setLevel(logging.ERROR)" 2>/dev/null || true
+          # Run pytest with aggressive output suppression - redirect everything to log file
+          exec 3>&1 4>&2
+          exec 1>/dev/null 2>/dev/null
 
-          # Run pytest with comprehensive output suppression
-          python -m pytest --json-report --json-report-file=pr_results.json --tb=no -q --disable-warnings --log-level=ERROR > test_run_output.log 2>&1 || true
+          python -m pytest --json-report --json-report-file=pr_results.json --tb=no -q --disable-warnings --log-level=CRITICAL --log-cli-level=CRITICAL 2>&1 | tee test_run_output.log >/dev/null || true
+
+          # Restore output for final messages
+          exec 1>&3 2>&4
 
           # Save output to debug file for artifact
           echo "=== PYTEST RUN OUTPUT ===" >> debug_test_run.log
-          cat test_run_output.log >> debug_test_run.log
+          if [ -f test_run_output.log ]; then
+            cat test_run_output.log >> debug_test_run.log
+          fi
 
           if [ -f pr_results.json ]; then
             echo "Test results file created successfully"
@@ -462,18 +469,25 @@ jobs:
           MIGRATION_MANAGER_QUIET: "true"
           SQLALCHEMY_WARN_20: "false"
           SQLALCHEMY_SILENCE_UBER_WARNING: "1"
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          PYTEST_CURRENT_TEST: ""
         run: |
           echo "Running tests on target branch..."
 
-          # Suppress Python logging and redirect all output
-          python -c "import logging; logging.getLogger().setLevel(logging.ERROR); logging.getLogger('migration_manager').setLevel(logging.ERROR)" 2>/dev/null || true
+          # Run pytest with aggressive output suppression - redirect everything to log file
+          exec 3>&1 4>&2
+          exec 1>/dev/null 2>/dev/null
 
-          # Run pytest with comprehensive output suppression
-          python -m pytest --json-report --json-report-file=target_results.json --tb=no -q --disable-warnings --log-level=ERROR > target_test_run_output.log 2>&1 || true
+          python -m pytest --json-report --json-report-file=target_results.json --tb=no -q --disable-warnings --log-level=CRITICAL --log-cli-level=CRITICAL 2>&1 | tee target_test_run_output.log >/dev/null || true
+
+          # Restore output for final messages
+          exec 1>&3 2>&4
 
           # Save output to debug file for artifact
           echo "=== PYTEST RUN OUTPUT ===" >> debug_target_test_run.log
-          cat target_test_run_output.log >> debug_target_test_run.log
+          if [ -f target_test_run_output.log ]; then
+            cat target_test_run_output.log >> debug_target_test_run.log
+          fi
 
           if [ -f target_results.json ]; then
             echo "Test results file created successfully"
