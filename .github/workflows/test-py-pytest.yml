@@ -68,7 +68,7 @@ on:
 
 jobs:
   lint:
-    uses: ./.github/workflows/test-lint-py.yml
+    uses: ./.github/workflows/test-py-lint.yml
     permissions:
       contents: write # Lint job might push changes
 
