@@ -145,13 +145,15 @@ jobs:
             if [[ "$ERROR_FILE" != "Unknown file" ]]; then
               echo "Error in file $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              # Truncate to 500 chars for GitHub output, full details go to artifact
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
             else
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              # Truncate to 500 chars for GitHub output, full details go to artifact  
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
             fi
             
-            echo "::error::PR branch discovery error details: ${ERROR_DETAILS:0:200}..."
+            echo "::error::PR branch discovery error details (truncated): ${ERROR_DETAILS}..."
             HAS_COLLECTION_ERRORS="true"
           else
             echo "No discovery errors detected in PR branch"
@@ -162,13 +164,13 @@ jobs:
               echo "::warning::No tests were found in the PR branch"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="No test files were discovered that match pytest's test discovery pattern"
+              ERROR_DETAILS="No test files discovered matching pytest pattern"
             else  
               echo "Found $TEST_COUNT tests in PR branch"
             fi
           fi
 
-          # Set all the outputs
+          # Set all the outputs with size limits
           echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
           echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
           echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
@@ -181,7 +183,7 @@ jobs:
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          # Save full collection output to debug file for artifact
+          # Save full collection output to debug file for artifact (full details preserved)
           echo "=== FULL COLLECTION OUTPUT ===" >> debug_collection.log
           cat collection_output.txt >> debug_collection.log
 
@@ -448,13 +450,15 @@ jobs:
             if [[ "$ERROR_FILE" != "Unknown file" ]]; then
               echo "Error in file $ERROR_FILE"
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              # Truncate to 500 chars for GitHub output, full details go to artifact
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
             else
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+              # Truncate to 500 chars for GitHub output, full details go to artifact  
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-500)
             fi
             
-            echo "::warning::Target branch discovery error details: ${ERROR_DETAILS:0:200}..."
+            echo "::warning::Target branch discovery error details (truncated): ${ERROR_DETAILS}..."
             HAS_COLLECTION_ERRORS="true"
           else
             echo "No discovery errors detected in target branch"
@@ -465,13 +469,13 @@ jobs:
               echo "::warning::No tests were found in the target branch"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="No test files were discovered in target branch that match pytest's test discovery pattern"
+              ERROR_DETAILS="No test files discovered matching pytest pattern"
             else  
               echo "Found $TEST_COUNT tests in target branch"
             fi
           fi
 
-          # Set all the outputs
+          # Set all the outputs with size limits
           echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
           echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
           echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
@@ -484,7 +488,7 @@ jobs:
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          # Save full collection output to debug file for artifact
+          # Save full collection output to debug file for artifact (full details preserved)
           echo "=== FULL COLLECTION OUTPUT ===" >> debug_target_collection.log
           cat collection_output.txt >> debug_target_collection.log
 
@@ -1197,7 +1201,7 @@ jobs:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_ASSIGNEES_JSON: ${{ toJson(github.event.pull_request.assignees) }}
-          USER_MAP_JSON: ${{ secrets.DISCORD_USER_MAP || '{}' }}
+          USER_MAP_JSON: ${{ secrets.DISCORD_USER_MAP }}
           REGRESSION_FILE_PATH: "regression_details.txt"
           DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
           INPUT_PING_LATEST_COMMITTER: ${{ inputs.ping_latest_committer }}
