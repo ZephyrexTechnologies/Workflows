@@ -190,21 +190,17 @@ jobs:
       - name: Run tests on PR Branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_test_run.log) 2>&1
-
           echo "Running tests on PR branch..."
-          python -m pytest -vv --json-report --json-report-file=pr_results.json || true
 
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
+          # Run pytest with minimal console output, redirect everything to files
+          python -m pytest --json-report --json-report-file=pr_results.json > test_run_output.log 2>&1 || true
+
+          # Save output to debug file for artifact
+          echo "=== PYTEST RUN OUTPUT ===" >> debug_test_run.log
+          cat test_run_output.log >> debug_test_run.log
 
           if [ -f pr_results.json ]; then
-            echo "Test results file successfully created for PR branch"
-            # Save first 200 chars to debug file only
-            echo "=== JSON RESULTS PREVIEW ===" >> debug_test_run.log
-            head -c 200 pr_results.json >> debug_test_run.log
+            echo "Test results file created successfully"
           else
             echo "::error::Failed to create test results file for PR branch"
           fi
@@ -328,6 +324,7 @@ jobs:
           path: |
             pr_test_data.json
             debug_*.log
+            test_run_output.log
             collection_output.txt
             error_details.txt
             pr_results.json
@@ -457,21 +454,17 @@ jobs:
       - name: Run tests on target branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_target_test_run.log) 2>&1
-
           echo "Running tests on target branch..."
-          python -m pytest -vv --json-report --json-report-file=target_results.json || true
 
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
+          # Run pytest with minimal console output, redirect everything to files
+          python -m pytest --json-report --json-report-file=target_results.json > target_test_run_output.log 2>&1 || true
+
+          # Save output to debug file for artifact
+          echo "=== PYTEST RUN OUTPUT ===" >> debug_target_test_run.log
+          cat target_test_run_output.log >> debug_target_test_run.log
 
           if [ -f target_results.json ]; then
-            echo "Test results file successfully created for target branch"
-            # Save first 200 chars to debug file only
-            echo "=== JSON RESULTS PREVIEW ===" >> debug_target_test_run.log
-            head -c 200 target_results.json >> debug_target_test_run.log
+            echo "Test results file created successfully"
           else
             echo "::warning::Failed to create test results file for target branch"
           fi
