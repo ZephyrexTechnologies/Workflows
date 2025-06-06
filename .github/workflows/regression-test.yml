@@ -16,7 +16,6 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python 3.10
@@ -28,9 +27,15 @@ jobs:
         python -m pip install --upgrade pip
         pip install flake8 pytest pytest-reportlog black
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    - name: Checkout PR branch
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.ref }}
     - name: Test PR branch with pytest
       run: |
         pytest --report-log=pr_test_results.json
+        find . -name "*.pyc" | xargs rm
+      continue-on-error: true
     - name: Checkout main
       uses: actions/checkout@v4
       with:
@@ -38,7 +43,8 @@ jobs:
         path: main
     - name: Test main
       run: |
-        pytest --report-log=main_test_results.json
+        pytest ./main --report-log=main_test_results.json
+      continue-on-error: true
     - name: Print test results
       run: |
         cat pr_test_results.json

@@ -5,30 +5,40 @@ import sys
 
 
 def main():
-    source_dict = defaultdict(list)
-    dest_dict = defaultdict(list)
-    source_fp = pathlib.Path(sys.argv[1])
-    dest_fp = pathlib.Path(sys.argv[2])
-    with open(source_fp, "r") as f:
-        source_results = f.read().splitlines()[3:-1]  # Trim unnecessary entries
-        for item in source_results:
+    pull_request_dict = defaultdict(list)
+    destination_branch_dict = defaultdict(list)
+    pull_request_fp = pathlib.Path(sys.argv[1])
+    destination_branch_fp = pathlib.Path(sys.argv[2])
+    with open(pull_request_fp, "r") as f:
+        pull_request_results = f.read().splitlines()[3:-1]  # Trim unnecessary entries
+        for item in pull_request_results:
             print(f"ITEM: {item}")
             json_data = json.loads(item)
             if "nodeid" in json_data.keys():
-                source_dict[json_data["outcome"]].append(json_data["nodeid"])
-    with open(dest_fp, "r") as f:
-        dest_results = f.read().splitlines()[3:-1]  # Trim unnecessary entries
-        for item in dest_results:
+                pull_request_dict[json_data["outcome"]].append(json_data["nodeid"])
+    with open(destination_branch_fp, "r") as f:
+        destination_branch_results = f.read().splitlines()[
+            3:-1
+        ]  # Trim unnecessary entries
+        for item in destination_branch_results:
             json_data = json.loads(item)
             if "nodeid" in json_data.keys():
-                dest_dict[json_data["outcome"]].append(json_data["nodeid"])
+                destination_branch_dict[json_data["outcome"]].append(
+                    json_data["nodeid"]
+                )
     regressions = []
-    for item in dest_dict["passed"]:
-        if item not in source_dict["passed"]:
+    warnings = []
+    for item in destination_branch_dict["passed"]:
+        if item in pull_request_dict["failed"]:
             regressions.append(item)
+        elif item in pull_request_dict["skipped"]:
+            warnings.append(item)
+    print(f"{len(warnings)} tests now skipped/xfailed that weren't previously")
+    for warning in warnings:
+        print(f"Warning: {warning}")
     print(f"{len(regressions)} regressions were found")
-    for item in regressions:
-        print(f"Regression {item}")
+    for regression in regressions:
+        print(f"Regression: {regression}")
     if len(regressions) > 0:
         exit(1)
 
