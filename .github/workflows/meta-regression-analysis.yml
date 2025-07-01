@@ -71,10 +71,6 @@ jobs:
           ITEM_TYPE_SINGULAR_ENV: "${{ inputs.item_type_singular }}"
           ITEM_TYPE_PLURAL_ENV: "${{ inputs.item_type_plural }}"
         run: |
-          # Create debug file for detailed output
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_regression_analysis.log) 2>&1
-
           echo "Running regression analysis..."
 
           python3 - <<'EOF'
@@ -159,9 +155,11 @@ jobs:
               regression_items_list = sorted(list(target_passing_set.intersection(pr_failing_set)))
               
               if regression_items_list:
-                  print(f"Found {len(regression_items_list)} regression(s)!")
                   has_regressions_output = "true"
                   regression_count_output = len(regression_items_list)
+                  print(f"Found {len(regression_items_list)} regression(s)!")
+                  print("::error::Test Regressions Found!")
+                  print(f"::error::{len(regression_items_list)} regression(s) detected. This job was intentionally failed.")
                   with open("regression_details.txt", "w") as f:
                       f.write(f"Found {len(regression_items_list)} {item_type_p} that were passing/clean in the target branch but are now failing/have issues in the PR branch:\n\n")
                       for idx, item in enumerate(regression_items_list, 1):
@@ -190,12 +188,9 @@ jobs:
               print("::warning::GITHUB_OUTPUT environment variable not set.")
           EOF
 
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
-
           echo "Regression analysis script completed."
 
-          # Only show regression summary in logs if regressions found
+          # Show regression summary in logs if regressions found
           if [ -f "regression_details.txt" ]; then
             REGRESSION_COUNT=$(grep -c "^[0-9]\+\." regression_details.txt || echo "0")
             if [ "$REGRESSION_COUNT" -gt 0 ]; then
@@ -205,13 +200,14 @@ jobs:
             fi
           fi
 
-      - name: Upload debug logs
+      - name: Upload regression analysis results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: regression_analysis_debug_logs_${{ inputs.pr_number || inputs.run_id }}
-          path: debug_regression_analysis.log
-          retention-days: 7
+          name: regression_analysis_results_${{ inputs.pr_number || inputs.run_id }}
+          path: |
+            regression_details.txt
+          retention-days: 3
           if-no-files-found: ignore
 
       - name: Fail job if regressions are found
@@ -219,16 +215,4 @@ jobs:
         run: |
           echo "Regressions detected. Failing the job as per configuration."
           REGRESSION_COUNT_VAL=${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
-          echo "### :x: Regressions Found!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY # Newline
-          echo "**$REGRESSION_COUNT_VAL regression(s) detected.** This job was intentionally failed." >> $GITHUB_STEP_SUMMARY
-          echo "The 'Upload regression details artifact' step will still attempt to upload details." >> $GITHUB_STEP_SUMMARY
           exit 1
-
-      - name: Upload regression details artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: regression_details_pr_${{ inputs.pr_number || inputs.run_id }}_${{ inputs.item_type_plural }}
-          path: regression_details.txt
-          retention-days: 7
