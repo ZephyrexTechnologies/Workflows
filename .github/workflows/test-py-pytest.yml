@@ -38,9 +38,6 @@ on:
       pr_percentage:
         description: "Pass percentage in PR/source branch"
         value: ${{ jobs.test-source-branch.outputs.percentage }}
-      pr_failing_tests:
-        description: "List of failing tests in PR/source branch (JSON string)"
-        value: ${{ jobs.test-source-branch.outputs.failing_tests }}
       pr_collection_errors:
         description: "PR branch has collection errors"
         value: ${{ jobs.test-source-branch.outputs.collection_errors }}
@@ -56,9 +53,6 @@ on:
       target_percentage:
         description: "Pass percentage in target branch"
         value: ${{ jobs.test-target-branch.outputs.percentage }}
-      target_passing_tests:
-        description: "List of passing tests in target branch (JSON string)"
-        value: ${{ jobs.test-target-branch.outputs.passing_tests }}
       has_regressions:
         description: "Boolean indicating if regressions were found"
         value: ${{ jobs.compare-results.outputs.has_regressions }}
@@ -67,13 +61,7 @@ on:
         value: ${{ jobs.compare-results.outputs.regression_count }}
 
 jobs:
-  lint:
-    uses: ./.github/workflows/test-py-lint.yml
-    permissions:
-      contents: write # Lint job might push changes
-
   test-source-branch:
-    needs: lint
     runs-on: ${{ inputs.runs_on }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
@@ -84,12 +72,9 @@ jobs:
       has_errors: ${{ steps.check-collection.outputs.has_errors }}
       error_type: ${{ steps.check-collection.outputs.error_type }}
       error_details: ${{ steps.check-collection.outputs.error_details }}
-      failing_tests: ${{ steps.extract-results.outputs.failing_tests }}
-      skipped_tests: ${{ steps.extract-results.outputs.skipped_tests }}
-      xfailed_tests: ${{ steps.extract-results.outputs.xfailed_tests }}
-      all_tests: ${{ steps.extract-results.outputs.all_tests }}
-      skipped_tests_with_reasons: ${{ steps.extract-results.outputs.skipped_tests_with_reasons }}
-      xfailed_tests_with_reasons: ${{ steps.extract-results.outputs.xfailed_tests_with_reasons }}
+      failing_count: ${{ steps.extract-results.outputs.failing_count }}
+      skipped_count: ${{ steps.extract-results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.extract-results.outputs.xfailed_count }}
 
     steps:
       - name: Checkout PR Branch
@@ -104,7 +89,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          set -x
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
@@ -114,16 +98,8 @@ jobs:
       - name: Check for test collection errors
         id: check-collection
         run: |
-          set -x
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_collection.log) 2>&1
-
           echo "Running pytest collection check..."
           python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
 
           # Set default values
           HAS_COLLECTION_ERRORS="false"
@@ -158,7 +134,6 @@ jobs:
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
             else
-              # If we couldn't find a specific file, get general error info
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
             fi
@@ -193,50 +168,36 @@ jobs:
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          # Save full collection output to debug file for artifact
-          echo "=== FULL COLLECTION OUTPUT ===" >> debug_collection.log
-          cat collection_output.txt >> debug_collection.log
+          # Clean summary output
+          if [[ "$HAS_COLLECTION_ERRORS" == "true" ]]; then
+            echo "❌ Discovery Error: $ERROR_TYPE"
+          elif [[ "$NO_TESTS_FOUND" == "true" ]]; then
+            echo "⚠️ No Tests Found"
+          else
+            echo "✅ Discovery Success"
+          fi
 
       - name: Run tests on PR Branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          set -x
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_test_run.log) 2>&1
-
           echo "Running tests on PR branch..."
-          python -m pytest -vv --json-report --json-report-file=pr_results.json || true
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
+          python -m pytest -vv --json-report --json-report-file=pr_results.json --tb=short > test_output.txt 2>&1 || true
 
           if [ -f pr_results.json ]; then
-            echo "Test results file successfully created for PR branch"
-            # Save first 200 chars to debug file only
-            echo "=== JSON RESULTS PREVIEW ===" >> debug_test_run.log
-            head -c 200 pr_results.json >> debug_test_run.log
+            echo "✅ Test execution completed"
           else
-            echo "::error::Failed to create test results file for PR branch"
+            echo "❌ Test execution failed"
           fi
 
-      - name: Extract test results
+      - name: Extract test results and create artifacts
         id: extract-results
         run: |
-          set -x
           echo "PR_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_ENV
-          echo "Processing test results for PR branch: $PR_BRANCH"
-
-          # Create debug file for detailed output
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_extract_results.log) 2>&1
 
           python -c "
           import json
           import sys
           import os
-
-          print('Starting test results extraction script for PR branch')
 
           # Default values in case file doesn't exist or is invalid
           pr_total = 0
@@ -246,6 +207,7 @@ jobs:
           skipped_tests = []
           xfailed_tests = []
           all_tests = []
+          passing_tests = []
           skipped_tests_with_reasons = {}
           xfailed_tests_with_reasons = {}
 
@@ -259,7 +221,7 @@ jobs:
               if pr_results.get('exitcode', 0) > 1:
                   print('Detected non-zero exitcode, likely a collection error')
                   if 'collectors' in pr_results and pr_results['collectors']:
-                      print(f'Collection errors found: {pr_results[\"collectors\"]}')
+                      print(f'Collection errors found: {pr_results["collectors"]}')
                   pr_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   pr_passed = 0
               elif 'summary' in pr_results and isinstance(pr_results['summary'], dict):
@@ -277,7 +239,9 @@ jobs:
                           nodeid = test.get('nodeid', '')
                           if nodeid:
                               all_tests.append(nodeid)  # Track all tests regardless of outcome
-                              if outcome in ['failed', 'error']:
+                              if outcome == 'passed':
+                                  passing_tests.append(nodeid)
+                              elif outcome in ['failed', 'error']:
                                   failing_tests.append(nodeid)
                               elif outcome == 'skipped':
                                   skipped_tests.append(nodeid)
@@ -307,6 +271,7 @@ jobs:
                                       xfail_reason = str(test['call']['longrepr'])
                                   xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
                       
+                      print(f'Found {len(passing_tests)} passing tests')
                       print(f'Found {len(failing_tests)} failing tests')
                       print(f'Found {len(skipped_tests)} skipped tests')
                       print(f'Found {len(xfailed_tests)} xfailed tests')
@@ -325,7 +290,7 @@ jobs:
               if 'pr_results' in locals():
                   print(f'Available keys: {list(pr_results.keys())}')
                   if 'summary' in pr_results:
-                      print(f'Summary structure: {pr_results[\"summary\"]}')
+                      print(f'Summary structure: {pr_results["summary"]}')
           except Exception as e:
               print(f'Error processing results: {e}')
               import traceback
@@ -339,108 +304,88 @@ jobs:
           print(f'Xfailed tests: {len(xfailed_tests)}')
           print(f'All discovered tests: {len(all_tests)}')
 
-          # Set outputs for GitHub Actions
-          print('Writing results to GITHUB_OUTPUT')
+          # Set scalar outputs only (no large arrays)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'total={pr_total}\\n')
               f.write(f'passed={pr_passed}\\n')
               f.write(f'percentage={pr_percentage:.2f}\\n')
-              # Write test lists as compact JSON strings to avoid issues with large outputs
-              if failing_tests:
-                  f.write(f'failing_tests={json.dumps(failing_tests)}\\n')
-              else:
-                  f.write('failing_tests=[]\\n')
-              if skipped_tests:
-                  f.write(f'skipped_tests={json.dumps(skipped_tests)}\\n')
-              else:
-                  f.write('skipped_tests=[]\\n')
-              if xfailed_tests:
-                  f.write(f'xfailed_tests={json.dumps(xfailed_tests)}\\n')
-              else:
-                  f.write('xfailed_tests=[]\\n')
-              if all_tests:
-                  f.write(f'all_tests={json.dumps(all_tests)}\\n')
-              else:
-                  f.write('all_tests=[]\\n')
-              # Write test reason mappings
-              if skipped_tests_with_reasons:
-                  f.write(f'skipped_tests_with_reasons={json.dumps(skipped_tests_with_reasons)}\\n')
-              else:
-                  f.write('skipped_tests_with_reasons={}\\n')
-              if xfailed_tests_with_reasons:
-                  f.write(f'xfailed_tests_with_reasons={json.dumps(xfailed_tests_with_reasons)}\\n')
-              else:
-                  f.write('xfailed_tests_with_reasons={}\\n')
+              f.write(f'failing_count={len(failing_tests)}\\n')
+              f.write(f'skipped_count={len(skipped_tests)}\\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\\n')
 
+          # Extract warnings from test output
+          warnings_list = []
+          try:
+              with open('test_output.txt', 'r') as f:
+                  content = f.read()
+                  # Extract warnings section
+                  if '============================== warnings summary ===============================' in content:
+                      warnings_section = content.split('============================== warnings summary ===============================')[1]
+                      if '-- Docs:' in warnings_section:
+                          warnings_section = warnings_section.split('-- Docs:')[0]
+                      
+                      # Parse warnings - format is file path followed by indented warning details
+                      lines = warnings_section.split('\\n')
+                      current_warning_group = []
+                      
+                      for line in lines:
+                          line = line.rstrip()
+                          if not line or line.startswith('='):
+                              continue
+                          
+                          # Check if this is a file path (starts at column 0, ends with .py: or contains warning count)
+                          if not line.startswith(' ') and ('.py:' in line or 'warnings' in line):
+                              # Save previous warning group if exists
+                              if current_warning_group:
+                                  warnings_list.append('\\n'.join(current_warning_group))
+                              # Start new warning group
+                              current_warning_group = [line]
+                          elif line.startswith(' ') and current_warning_group:
+                              # This is part of the current warning (indented line)
+                              current_warning_group.append(line)
+                      
+                      # Don't forget the last warning group
+                      if current_warning_group:
+                          warnings_list.append('\\n'.join(current_warning_group))
+              
+              print(f'Extracted {len(warnings_list)} warning groups from test output')
+          except Exception as e:
+              print(f'Could not extract warnings: {e}')
+
+          # Save test lists to artifact files instead of job outputs
+          test_data = {
+              'passing_tests': passing_tests,
+              'failing_tests': failing_tests,
+              'skipped_tests': skipped_tests,
+              'xfailed_tests': xfailed_tests,
+              'all_tests': all_tests,
+              'skipped_tests_with_reasons': skipped_tests_with_reasons,
+              'xfailed_tests_with_reasons': xfailed_tests_with_reasons,
+              'warnings': warnings_list
+          }
+
+          with open('pr_test_data.json', 'w') as f:
+              json.dump(test_data, f, indent=2)
+
+          print('Test data saved to pr_test_data.json for artifact')
           print('Results extraction completed')
           "
 
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
+          echo "✅ Test results: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} passed (${{ steps.extract-results.outputs.percentage }}%)"
 
-          echo "PR branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
-
-      - name: Upload PR branch debug logs
+      - name: Upload PR branch artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr_branch_debug_logs_${{ github.event.pull_request.number || github.run_id }}
+          name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            debug_*.log
-            collection_output.txt
-            error_details.txt
+            pr_test_data.json
+            test_output.txt
             pr_results.json
           retention-days: 3
           if-no-files-found: ignore
 
-      - name: Create PR branch test data artifact
-        if: always()
-        run: |
-          set -x
-          echo "Creating PR branch test data for regression analysis..."
-
-          # Create directory for artifact
-          mkdir -p pr_test_data
-
-          # Extract failing tests from outputs and save to JSON file
-          python3 - << 'EOF'
-          import json
-          import os
-
-          # Get failing tests from the step outputs (if available)
-          failing_tests_str = '''${{ steps.extract-results.outputs.failing_tests || '[]' }}'''
-
-          try:
-              if failing_tests_str and failing_tests_str != '[]':
-                  failing_tests = json.loads(failing_tests_str)
-              else:
-                  failing_tests = []
-              
-              print(f"Saving {len(failing_tests)} failing tests to artifact")
-              
-              # Save to JSON file for artifact
-              with open('pr_test_data/failing_items.json', 'w') as f:
-                  json.dump(failing_tests, f, indent=2)
-              
-              print("PR branch test data saved successfully")
-              
-          except Exception as e:
-              print(f"Error saving PR branch test data: {e}")
-              # Create empty file as fallback
-              with open('pr_test_data/failing_items.json', 'w') as f:
-                  json.dump([], f)
-          EOF
-
-      - name: Upload PR branch test data artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: pr_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
-          path: pr_test_data/
-          retention-days: 1
-
   test-target-branch:
-    needs: lint
     runs-on: ${{ inputs.runs_on }}
     outputs:
       total: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.total || steps.extract-results.outputs.total }}
@@ -451,8 +396,7 @@ jobs:
       has_errors: ${{ steps.check-collection.outputs.has_errors }}
       error_type: ${{ steps.check-collection.outputs.error_type }}
       error_details: ${{ steps.check-collection.outputs.error_details }}
-      passing_tests: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passing_tests || steps.extract-results.outputs.passing_tests }}
-      all_tests: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.all_tests || steps.extract-results.outputs.all_tests }}
+      passing_count: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passing_count || steps.extract-results.outputs.passing_count }}
 
     steps:
       - name: Checkout target branch
@@ -468,7 +412,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          set -x
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
@@ -478,7 +421,6 @@ jobs:
       - name: Check for test collection errors
         id: check-collection
         run: |
-          set -x
           # Create verbose debug file for artifact
           exec 3>&1 4>&2
           exec 1> >(tee -a debug_target_collection.log) 2>&1
@@ -522,7 +464,6 @@ jobs:
               grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
             else
-              # If we couldn't find a specific file, get general error info
               grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
               ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
             fi
@@ -564,32 +505,20 @@ jobs:
       - name: Run tests on target branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          set -x
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_target_test_run.log) 2>&1
-
           echo "Running tests on target branch..."
-          python -m pytest -vv --json-report --json-report-file=target_results.json || true
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
+          python -m pytest -vv --json-report --json-report-file=target_results.json --tb=short > target_test_output.txt 2>&1 || true
 
           if [ -f target_results.json ]; then
-            echo "Test results file successfully created for target branch"
-            # Save first 200 chars to debug file only
-            echo "=== JSON RESULTS PREVIEW ===" >> debug_target_test_run.log
-            head -c 200 target_results.json >> debug_target_test_run.log
+            echo "✅ Test execution completed"
           else
-            echo "::warning::Failed to create test results file for target branch"
+            echo "❌ Test execution failed"
           fi
 
-      - name: Extract test results
+      - name: Extract test results and create artifacts
         id: extract-results
         # Only run if there were no collection errors
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          set -x
           echo "Processing test results for target branch: ${{ inputs.target_branch_to_compare }}"
 
           # Create debug file for detailed output
@@ -608,6 +537,9 @@ jobs:
           target_passed = 0
           target_percentage = 0
           passing_tests = []
+          failing_tests = []
+          skipped_tests = []
+          xfailed_tests = []
           all_tests = []
 
           try:
@@ -620,7 +552,7 @@ jobs:
               if target_results.get('exitcode', 0) > 1:
                   print('Detected non-zero exitcode, likely a collection error')
                   if 'collectors' in target_results and target_results['collectors']:
-                      print(f'Collection errors found: {target_results[\"collectors\"]}')
+                      print(f'Collection errors found: {target_results["collectors"]}')
                   target_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   target_passed = 0
               elif 'summary' in target_results and isinstance(target_results['summary'], dict):
@@ -630,9 +562,9 @@ jobs:
                   target_passed = summary.get('passed', 0)
                   print(f'Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
                   
-                  # Extract passing tests and all tests
+                  # Extract all test outcomes
                   if 'tests' in target_results:
-                      print('Extracting passing tests and all discovered tests')
+                      print('Extracting all test outcomes from target')
                       for test in target_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
@@ -640,8 +572,17 @@ jobs:
                               all_tests.append(nodeid)  # Track all tests regardless of outcome
                               if outcome == 'passed':
                                   passing_tests.append(nodeid)
+                              elif outcome in ['failed', 'error']:
+                                  failing_tests.append(nodeid)
+                              elif outcome == 'skipped':
+                                  skipped_tests.append(nodeid)
+                              elif outcome == 'xfailed':
+                                  xfailed_tests.append(nodeid)
                       
                       print(f'Found {len(passing_tests)} passing tests')
+                      print(f'Found {len(failing_tests)} failing tests')
+                      print(f'Found {len(skipped_tests)} skipped tests')
+                      print(f'Found {len(xfailed_tests)} xfailed tests')
                       print(f'Found {len(all_tests)} total discovered tests')
               else:
                   print('No valid summary structure found')
@@ -657,7 +598,7 @@ jobs:
               if 'target_results' in locals():
                   print(f'Available keys: {list(target_results.keys())}')
                   if 'summary' in target_results:
-                      print(f'Summary structure: {target_results[\"summary\"]}')
+                      print(f'Summary structure: {target_results["summary"]}')
           except Exception as e:
               print(f'Error processing results: {e}')
               import traceback
@@ -669,22 +610,66 @@ jobs:
           print(f'Passing tests: {len(passing_tests)}')
           print(f'All discovered tests: {len(all_tests)}')
 
-          # Set outputs for GitHub Actions
-          print('Writing results to GITHUB_OUTPUT')
+          # Set scalar outputs only (no large arrays)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'total={target_total}\\n')
               f.write(f'passed={target_passed}\\n')
               f.write(f'percentage={target_percentage:.2f}\\n')
-              # Write test lists as compact JSON strings to avoid issues with large outputs
-              if passing_tests:
-                  f.write(f'passing_tests={json.dumps(passing_tests)}\\n')
-              else:
-                  f.write('passing_tests=[]\\n')
-              if all_tests:
-                  f.write(f'all_tests={json.dumps(all_tests)}\\n')
-              else:
-                  f.write('all_tests=[]\\n')
+              f.write(f'passing_count={len(passing_tests)}\\n')
 
+          # Extract warnings from test output
+          warnings_list = []
+          try:
+              with open('target_test_output.txt', 'r') as f:
+                  content = f.read()
+                  # Extract warnings section
+                  if '============================== warnings summary ===============================' in content:
+                      warnings_section = content.split('============================== warnings summary ===============================')[1]
+                      if '-- Docs:' in warnings_section:
+                          warnings_section = warnings_section.split('-- Docs:')[0]
+                      
+                      # Parse warnings - format is file path followed by indented warning details
+                      lines = warnings_section.split('\\n')
+                      current_warning_group = []
+                      
+                      for line in lines:
+                          line = line.rstrip()
+                          if not line or line.startswith('='):
+                              continue
+                          
+                          # Check if this is a file path (starts at column 0, ends with .py: or contains warning count)
+                          if not line.startswith(' ') and ('.py:' in line or 'warnings' in line):
+                              # Save previous warning group if exists
+                              if current_warning_group:
+                                  warnings_list.append('\\n'.join(current_warning_group))
+                              # Start new warning group
+                              current_warning_group = [line]
+                          elif line.startswith(' ') and current_warning_group:
+                              # This is part of the current warning (indented line)
+                              current_warning_group.append(line)
+                      
+                      # Don't forget the last warning group
+                      if current_warning_group:
+                          warnings_list.append('\\n'.join(current_warning_group))
+              
+              print(f'Extracted {len(warnings_list)} warning groups from target test output')
+          except Exception as e:
+              print(f'Could not extract warnings: {e}')
+
+          # Save test lists to artifact files instead of job outputs
+          test_data = {
+              'passing_tests': passing_tests,
+              'failing_tests': failing_tests,
+              'skipped_tests': skipped_tests,
+              'xfailed_tests': xfailed_tests,
+              'all_tests': all_tests,
+              'warnings': warnings_list
+          }
+
+          with open('target_test_data.json', 'w') as f:
+              json.dump(test_data, f, indent=2)
+
+          print('Test data saved to target_test_data.json for artifact')
           print('Results extraction completed')
           "
 
@@ -693,64 +678,17 @@ jobs:
 
           echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
 
-      - name: Upload target branch debug logs
+      - name: Upload target branch artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: target_branch_debug_logs_${{ github.event.pull_request.number || github.run_id }}
+          name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            debug_target_*.log
-            collection_output.txt
-            error_details.txt
+            target_test_data.json
+            target_test_output.txt
             target_results.json
           retention-days: 3
           if-no-files-found: ignore
-
-      - name: Create target branch test data artifact
-        if: always()
-        run: |
-          set -x
-          echo "Creating target branch test data for regression analysis..."
-
-          # Create directory for artifact
-          mkdir -p target_test_data
-
-          # Extract passing tests from outputs and save to JSON file
-          python3 - << 'EOF'
-          import json
-          import os
-
-          # Get passing tests from the step outputs (if available)
-          passing_tests_str = '''${{ steps.extract-results.outputs.passing_tests || steps.set-error-outputs.outputs.passing_tests || '[]' }}'''
-
-          try:
-              if passing_tests_str and passing_tests_str != '[]':
-                  passing_tests = json.loads(passing_tests_str)
-              else:
-                  passing_tests = []
-              
-              print(f"Saving {len(passing_tests)} passing tests to artifact")
-              
-              # Save to JSON file for artifact
-              with open('target_test_data/passing_items.json', 'w') as f:
-                  json.dump(passing_tests, f, indent=2)
-              
-              print("Target branch test data saved successfully")
-              
-          except Exception as e:
-              print(f"Error saving target branch test data: {e}")
-              # Create empty file as fallback
-              with open('target_test_data/passing_items.json', 'w') as f:
-                  json.dump([], f)
-          EOF
-
-      - name: Upload target branch test data artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: target_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
-          path: target_test_data/
-          retention-days: 1
 
       # Add a step to set default outputs when collection errors are detected
       - name: Set collection error outputs
@@ -761,8 +699,7 @@ jobs:
           echo "total=0" >> $GITHUB_OUTPUT
           echo "passed=0" >> $GITHUB_OUTPUT
           echo "percentage=0.00" >> $GITHUB_OUTPUT
-          echo "passing_tests=[]" >> $GITHUB_OUTPUT
-          echo "all_tests=[]" >> $GITHUB_OUTPUT
+          echo "passing_count=0" >> $GITHUB_OUTPUT
 
   compare-results:
     needs: [test-source-branch, test-target-branch]
@@ -777,103 +714,181 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y bc
 
+      - name: Download test data artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*_branch_data_${{ github.event.pull_request.number || github.run_id }}"
+          path: ./artifacts
+          merge-multiple: false
+
       - name: Check for collection errors
         run: |
-          # Create analysis debug file
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_comparison_analysis.log) 2>&1
-
-          echo "Retrieving collection error status information"
           PR_COLLECTION_ERRORS="${{ needs.test-source-branch.outputs.collection_errors }}"
           PR_NO_TESTS="${{ needs.test-source-branch.outputs.no_tests_found }}"
           PR_ERROR_TYPE="${{ needs.test-source-branch.outputs.error_type }}"
-          PR_ERROR_DETAILS="${{ needs.test-source-branch.outputs.error_details }}"
           TARGET_COLLECTION_ERRORS="${{ needs.test-target-branch.outputs.collection_errors }}"
 
-          echo "PR branch collection errors: $PR_COLLECTION_ERRORS"
-          echo "PR branch no tests found: $PR_NO_TESTS"
-          echo "PR branch error type: $PR_ERROR_TYPE"
-          echo "Target branch collection errors: $TARGET_COLLECTION_ERRORS"
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
-
-          # Distinct error handling for PR branch
+          # Clean discovery status reporting
           if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
-            echo "::error::Test discovery errors in PR branch: $PR_ERROR_TYPE"
-            echo "::error::$PR_ERROR_DETAILS"
-            echo "❌ PR branch has test discovery errors. Python modules could not be imported correctly."
+            echo "❌ Discovery Error (PR): $PR_ERROR_TYPE"
             exit 1
+          elif [[ "$PR_NO_TESTS" == "true" ]]; then
+            echo "❌ No Tests Found (PR)"
+            exit 1
+          else
+            echo "✅ Discovery Success (PR)"
           fi
 
-          if [[ "$PR_NO_TESTS" == "true" ]]; then
-            echo "::error::No tests were found in the PR branch"
-            echo "❌ PR branch has no tests detected. Please add test files that match pytest's discovery pattern."
-            exit 1
-          fi
-
-          # Warning for target branch issues (not a failure)
           if [[ "$TARGET_COLLECTION_ERRORS" == "true" ]]; then
-            echo "⚠️ Target branch has test discovery errors. Tests will still be compared but results may not be accurate."
+            echo "⚠️ Discovery Error (Target)"
+          elif [[ "${{ needs.test-target-branch.outputs.no_tests_found }}" == "true" ]]; then
+            echo "⚠️ No Tests Found (Target)"
+          else
+            echo "✅ Discovery Success (Target)"
           fi
 
-          if [[ "${{ needs.test-target-branch.outputs.no_tests_found }}" == "true" ]]; then
-            echo "⚠️ Target branch has no tests detected. PR branch tests will still be evaluated."
-          fi
-
-      # Split the regression check into separate steps for better control
-      # NOTE: These regression analysis steps are redundant with the perform-regression-analysis job
-      # but are kept for now to ensure backward compatibility. They should be removed in a future cleanup.
-      - name: Run regression analysis
+      - name: Run comprehensive regression analysis
         run: |
-          # Create analysis debug file
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_regression_analysis.log) 2>&1
-
-          echo "Running regression analysis..."
+          echo "Running comprehensive regression analysis..."
 
           python3 - << 'EOF'
           import json
           import os
+          import glob
 
           try:
-              # Parse the inputs
-              target_passing_str = '''${{ needs.test-target-branch.outputs.passing_tests }}'''
-              pr_failing_str = '''${{ needs.test-source-branch.outputs.failing_tests }}'''
+              # Load test data from artifacts
+              target_data = {}
+              pr_data = {}
               
-              # Parse JSON 
-              target_passing = json.loads(target_passing_str) if target_passing_str and target_passing_str != '[]' else []
-              pr_failing = json.loads(pr_failing_str) if pr_failing_str and pr_failing_str != '[]' else []
+              # Load target and PR data
+              target_files = glob.glob('./artifacts/target_branch_data_*/target_test_data.json')
+              if target_files:
+                  with open(target_files[0], 'r') as f:
+                      target_data = json.load(f)
               
-              print(f"Parsed {len(target_passing)} passing tests from target branch")
-              print(f"Parsed {len(pr_failing)} failing tests from PR branch")
+              pr_files = glob.glob('./artifacts/pr_branch_data_*/pr_test_data.json')
+              if pr_files:
+                  with open(pr_files[0], 'r') as f:
+                      pr_data = json.load(f)
               
-              # Find regressions using set operations
-              target_passing_set = set(target_passing)
-              pr_failing_set = set(pr_failing)
-              regression_tests = list(target_passing_set.intersection(pr_failing_set))
+              # Extract all test categories
+              target_passing = set(target_data.get('passing_tests', []))
+              target_failing = set(target_data.get('failing_tests', []))
+              target_skipped = set(target_data.get('skipped_tests', []))
+              target_xfailed = set(target_data.get('xfailed_tests', []))
+              target_warnings = set(target_data.get('warnings', []))
               
-              # Write results to file if there are regressions
-              if regression_tests:
-                  print(f"Found {len(regression_tests)} regression(s)!")
+              pr_passing = set(pr_data.get('passing_tests', []))
+              pr_failing = set(pr_data.get('failing_tests', []))
+              pr_skipped = set(pr_data.get('skipped_tests', []))
+              pr_xfailed = set(pr_data.get('xfailed_tests', []))
+              pr_warnings = set(pr_data.get('warnings', []))
+              
+              # Debug: Print data for troubleshooting
+              print(f"🔍 Debug - Target branch data:")
+              print(f"  Passing: {len(target_passing)} tests")
+              print(f"  Failing: {len(target_failing)} tests")
+              print(f"  Skipped: {len(target_skipped)} tests")
+              print(f"  XFailed: {len(target_xfailed)} tests")
+              print(f"🔍 Debug - PR branch data:")
+              print(f"  Passing: {len(pr_passing)} tests")
+              print(f"  Failing: {len(pr_failing)} tests")
+              print(f"  Skipped: {len(pr_skipped)} tests")
+              print(f"  XFailed: {len(pr_xfailed)} tests")
+              
+              # All tests in each branch (regardless of outcome)
+              target_all_tests = target_passing.union(target_failing, target_skipped, target_xfailed)
+              pr_all_tests = pr_passing.union(pr_failing, pr_skipped, pr_xfailed)
+              
+              # Analyze different regression types
+              pass_to_fail = list(target_passing.intersection(pr_failing))
+              pass_to_skip = list(target_passing.intersection(pr_skipped.union(pr_xfailed)))
+              fail_to_skip = list(target_failing.intersection(pr_skipped))
+              pass_to_gone = list(target_passing - pr_all_tests)  # Passing tests that completely disappeared
+              fail_to_gone = list(target_failing - pr_all_tests)  # Failing tests that completely disappeared
+              discovery_regressions = list(pr_warnings - target_warnings)
+              
+              # Create comprehensive regression report
+              has_any_regressions = bool(pass_to_fail or pass_to_skip or fail_to_skip or pass_to_gone or fail_to_gone or discovery_regressions)
+              
+              with open("comprehensive_regression_report.txt", "w") as f:
+                  f.write("COMPREHENSIVE REGRESSION ANALYSIS\n")
+                  f.write("=" * 50 + "\n\n")
                   
+                  if pass_to_fail:
+                      f.write(f"PASS-TO-FAIL REGRESSIONS ({len(pass_to_fail)} tests)\n")
+                      f.write("Previously passing, now failing:\n")
+                      for i, test in enumerate(sorted(pass_to_fail), 1):
+                          f.write(f"  {i}. {test}\n")
+                      f.write("\n")
+                  
+                  if pass_to_skip:
+                      f.write(f"PASS-TO-SKIP REGRESSIONS ({len(pass_to_skip)} tests)\n")
+                      f.write("Previously passing, now skipped or xfailed:\n")
+                      for i, test in enumerate(sorted(pass_to_skip), 1):
+                          f.write(f"  {i}. {test}\n")
+                      f.write("\n")
+                  
+                  if fail_to_skip:
+                      f.write(f"FAIL-TO-SKIP REGRESSIONS ({len(fail_to_skip)} tests)\n")
+                      f.write("Previously failing, now skipped:\n")
+                      for i, test in enumerate(sorted(fail_to_skip), 1):
+                          f.write(f"  {i}. {test}\n")
+                      f.write("\n")
+                  
+                  if pass_to_gone:
+                      f.write(f"PASS-TO-GONE REGRESSIONS ({len(pass_to_gone)} tests)\n")
+                      f.write("Previously passing, now completely missing:\n")
+                      for i, test in enumerate(sorted(pass_to_gone), 1):
+                          f.write(f"  {i}. {test}\n")
+                      f.write("\n")
+                  
+                  if fail_to_gone:
+                      f.write(f"FAIL-TO-GONE REGRESSIONS ({len(fail_to_gone)} tests)\n")
+                      f.write("Previously failing, now completely missing:\n")
+                      for i, test in enumerate(sorted(fail_to_gone), 1):
+                          f.write(f"  {i}. {test}\n")
+                      f.write("\n")
+                  
+                  if discovery_regressions:
+                      f.write(f"DISCOVERY REGRESSIONS ({len(discovery_regressions)} warnings)\n")
+                      f.write("New warnings not present in target branch:\n")
+                      for i, warning in enumerate(sorted(discovery_regressions), 1):
+                          f.write(f"  {i}. {warning[:200]}...\n")
+                      f.write("\n")
+                  
+                  if not has_any_regressions:
+                      f.write("No regressions detected across all categories.\n")
+              
+              # Also create the simple regression file for backward compatibility
+              if pass_to_fail:
                   with open("regression_details.txt", "w") as f:
-                      f.write(f"Found {len(regression_tests)} tests that were passing in target branch but now failing in PR branch:\\n\\n")
-                      for idx, test in enumerate(sorted(regression_tests), 1):
-                          f.write(f"{idx}. {test}\\n")
-                  print("Regression details written to file")
+                      f.write(f"Found {len(pass_to_fail)} tests that were passing in target branch but now failing in PR branch:\n\n")
+                      for idx, test in enumerate(sorted(pass_to_fail), 1):
+                          f.write(f"{idx}. {test}\n")
+              
+              # Print summary
+              print(f"📊 Regression Analysis Results:")
+              print(f"  Pass-to-Fail: {len(pass_to_fail)} tests")
+              print(f"  Pass-to-Skip: {len(pass_to_skip)} tests")
+              print(f"  Fail-to-Skip: {len(fail_to_skip)} tests")
+              print(f"  Pass-to-Gone: {len(pass_to_gone)} tests")
+              print(f"  Fail-to-Gone: {len(fail_to_gone)} tests")
+              print(f"  Discovery: {len(discovery_regressions)} warnings")
+              
+              if has_any_regressions:
+                  print(f"❌ Total regressions detected: {len(pass_to_fail) + len(pass_to_skip) + len(fail_to_skip) + len(pass_to_gone) + len(fail_to_gone) + len(discovery_regressions)}")
               else:
-                  print("No regressions found")
+                  print("✅ No regressions detected")
+                  
           except Exception as e:
               print(f"Error in regression analysis: {e}")
               import traceback
               print(traceback.format_exc())
           EOF
 
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
-
-          echo "Regression analysis completed"
+          echo "✅ Comprehensive regression analysis completed"
 
       - name: Check for regression details file
         id: check-regressions
@@ -916,94 +931,17 @@ jobs:
           fi
 
       - name: Upload regression details artifact
-        if: steps.check-regressions.outputs.HAS_REGRESSIONS == 'true' && steps.check-regressions.outputs.REGRESSION_COUNT > 0
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          # The artifact name from reusable-regression-analyzer.yml
           name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
-          path: regression_details.txt
+          path: |
+            regression_details.txt
+            comprehensive_regression_report.txt
           retention-days: 1
+          if-no-files-found: ignore
 
-      - name: Check for skip/xfail regressions
-        run: |
-          # Create analysis debug file
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_skip_xfail_analysis.log) 2>&1
-
-          echo "Checking for tests that were passing in target but are now skipped or xfailed in PR"
-
-          python3 - << 'EOF'
-          import json
-          import os
-
-          try:
-              # Parse the inputs
-              target_passing_str = '''${{ needs.test-target-branch.outputs.passing_tests }}'''
-              pr_skipped_str = '''${{ needs.test-source-branch.outputs.skipped_tests }}'''
-              pr_xfailed_str = '''${{ needs.test-source-branch.outputs.xfailed_tests }}'''
-              pr_skipped_with_reasons_str = '''${{ needs.test-source-branch.outputs.skipped_tests_with_reasons }}'''
-              pr_xfailed_with_reasons_str = '''${{ needs.test-source-branch.outputs.xfailed_tests_with_reasons }}'''
-              
-              # Parse JSON 
-              target_passing = json.loads(target_passing_str) if target_passing_str and target_passing_str != '[]' else []
-              pr_skipped = json.loads(pr_skipped_str) if pr_skipped_str and pr_skipped_str != '[]' else []
-              pr_xfailed = json.loads(pr_xfailed_str) if pr_xfailed_str and pr_xfailed_str != '[]' else []
-              pr_skipped_with_reasons = json.loads(pr_skipped_with_reasons_str) if pr_skipped_with_reasons_str and pr_skipped_with_reasons_str != '{}' else {}
-              pr_xfailed_with_reasons = json.loads(pr_xfailed_with_reasons_str) if pr_xfailed_with_reasons_str and pr_xfailed_with_reasons_str != '{}' else {}
-              
-              print(f"Parsed {len(target_passing)} passing tests from target branch")
-              print(f"Parsed {len(pr_skipped)} skipped tests from PR branch")
-              print(f"Parsed {len(pr_xfailed)} xfailed tests from PR branch")
-              print(f"Parsed {len(pr_skipped_with_reasons)} skipped tests with reasons")
-              print(f"Parsed {len(pr_xfailed_with_reasons)} xfailed tests with reasons")
-              
-              # Find tests that were passing in target but are now skipped or xfailed in PR
-              target_passing_set = set(target_passing)
-              pr_skipped_set = set(pr_skipped)
-              pr_xfailed_set = set(pr_xfailed)
-              
-              passing_to_skipped = list(target_passing_set.intersection(pr_skipped_set))
-              passing_to_xfailed = list(target_passing_set.intersection(pr_xfailed_set))
-              
-              total_skip_xfail_regressions = len(passing_to_skipped) + len(passing_to_xfailed)
-              
-              if total_skip_xfail_regressions > 0:
-                  print(f"Found {total_skip_xfail_regressions} tests that were passing in target but are now skipped/xfailed in PR!")
-                  
-                  # Build comprehensive warning message
-                  warning_parts = [f"Skip/XFail Analysis: {total_skip_xfail_regressions} test(s) that were passing in target branch are now being skipped or xfailed in PR branch."]
-                  
-                  if passing_to_skipped:
-                      warning_parts.append(f"Tests now SKIPPED ({len(passing_to_skipped)}):")
-                      for idx, test in enumerate(sorted(passing_to_skipped), 1):
-                          reason = pr_skipped_with_reasons.get(test, 'No reason provided')
-                          warning_parts.append(f"  {idx}. {test} - Reason: {reason}")
-                  
-                  if passing_to_xfailed:
-                      warning_parts.append(f"Tests now XFAILED ({len(passing_to_xfailed)}):")
-                      for idx, test in enumerate(sorted(passing_to_xfailed), 1):
-                          reason = pr_xfailed_with_reasons.get(test, 'No reason provided')
-                          warning_parts.append(f"  {idx}. {test} - Reason: {reason}")
-                  
-                  warning_parts.append("While these changes don't fail the workflow, they indicate tests that were working before are now being bypassed. Please review these tests to ensure this is intentional.")
-                  
-                  # Print as single warning annotation
-                  combined_warning = " ".join(warning_parts)
-                  print(f"::warning::{combined_warning}")
-              else:
-                  print("No skip/xfail regressions found - all previously passing tests are still running.")
-          except Exception as e:
-              print(f"Error in skip/xfail analysis: {e}")
-              import traceback
-              print(traceback.format_exc())
-          EOF
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
-
-          echo "Skip/xfail regression analysis completed"
-
-      - name: Check for test additions and removals
+      - name: Check for test additions and removals from artifacts
         run: |
           # Create analysis debug file
           exec 3>&1 4>&2
@@ -1014,15 +952,27 @@ jobs:
           python3 - << 'EOF'
           import json
           import os
+          import glob
 
           try:
-              # Parse the inputs
-              target_all_str = '''${{ needs.test-target-branch.outputs.all_tests }}'''
-              pr_all_str = '''${{ needs.test-source-branch.outputs.all_tests }}'''
+              # Load test data from artifacts
+              target_data = {}
+              pr_data = {}
               
-              # Parse JSON 
-              target_all = json.loads(target_all_str) if target_all_str and target_all_str != '[]' else []
-              pr_all = json.loads(pr_all_str) if pr_all_str and pr_all_str != '[]' else []
+              # Load target and PR data
+              target_files = glob.glob('./artifacts/target_branch_data_*/target_test_data.json')
+              if target_files:
+                  with open(target_files[0], 'r') as f:
+                      target_data = json.load(f)
+              
+              pr_files = glob.glob('./artifacts/pr_branch_data_*/pr_test_data.json')
+              if pr_files:
+                  with open(pr_files[0], 'r') as f:
+                      pr_data = json.load(f)
+              
+              # Extract test arrays
+              target_all = target_data.get('all_tests', [])
+              pr_all = pr_data.get('all_tests', [])
               
               print(f"Parsed {len(target_all)} total tests from target branch")
               print(f"Parsed {len(pr_all)} total tests from PR branch")
@@ -1034,45 +984,15 @@ jobs:
               removed_tests = list(target_all_set - pr_all_set)  # In target but not in PR
               added_tests = list(pr_all_set - target_all_set)    # In PR but not in target
               
-              # Report removed tests (warnings)
-              if removed_tests:
-                  print(f"Found {len(removed_tests)} tests that were removed from target branch!")
-                  
-                  # Build comprehensive removal warning
-                  removal_parts = [f"Test Removal Analysis: {len(removed_tests)} test(s) that existed in target branch are missing from PR branch."]
-                  removal_parts.append(f"REMOVED Tests ({len(removed_tests)}):")
-                  for idx, test in enumerate(sorted(removed_tests), 1):
-                      removal_parts.append(f"  {idx}. {test}")
-                  removal_parts.append("These test removals should be reviewed to ensure they are intentional. If tests were renamed or moved, this may show as removal + addition.")
-                  
-                  # Print as single warning annotation
-                  combined_removal_warning = " ".join(removal_parts)
-                  print(f"::warning::{combined_removal_warning}")
+              # Report test changes
+              if removed_tests and added_tests:
+                  print(f"📊 Test Changes: +{len(added_tests)} added, -{len(removed_tests)} removed")
+              elif added_tests:
+                  print(f"✅ Test Additions: {len(added_tests)} new test(s) added")
+              elif removed_tests:
+                  print(f"⚠️ Test Removals: {len(removed_tests)} test(s) removed")
               else:
-                  print("No test removals detected.")
-              
-              # Report added tests (notifications/info)
-              if added_tests:
-                  print(f"Found {len(added_tests)} new tests added in PR branch!")
-                  
-                  # Build comprehensive addition notice
-                  addition_parts = [f"Test Addition Analysis: {len(added_tests)} new test(s) have been added in the PR branch."]
-                  addition_parts.append(f"NEW Tests ({len(added_tests)}):")
-                  for idx, test in enumerate(sorted(added_tests), 1):
-                      addition_parts.append(f"  {idx}. {test}")
-                  addition_parts.append("New tests detected - this indicates expanded test coverage!")
-                  
-                  # Print as single notice annotation
-                  combined_addition_notice = " ".join(addition_parts)
-                  print(f"::notice::{combined_addition_notice}")
-              else:
-                  print("No new tests detected in PR branch.")
-              
-              # Summary
-              if not removed_tests and not added_tests:
-                  print("Test suite composition is unchanged between target and PR branches.")
-              else:
-                  print(f"Test suite changes: {len(added_tests)} added, {len(removed_tests)} removed")
+                  print("✅ Test suite unchanged")
                   
           except Exception as e:
               print(f"Error in test addition/removal analysis: {e}")
@@ -1087,9 +1007,8 @@ jobs:
 
       - name: Compare test results
         run: |
-          echo "Test Results Summary:"
-          echo "Target branch (${{ inputs.target_branch_to_compare }}): ${{ needs.test-target-branch.outputs.passed }}/${{ needs.test-target-branch.outputs.total }} tests passed (${{ needs.test-target-branch.outputs.percentage }}%)"
-          echo "PR branch: ${{ needs.test-source-branch.outputs.passed }}/${{ needs.test-source-branch.outputs.total }} tests passed (${{ needs.test-source-branch.outputs.percentage }}%)"
+          echo "Target: ${{ needs.test-target-branch.outputs.passed }}/${{ needs.test-target-branch.outputs.total }} passed (${{ needs.test-target-branch.outputs.percentage }}%)"
+          echo "PR: ${{ needs.test-source-branch.outputs.passed }}/${{ needs.test-source-branch.outputs.total }} passed (${{ needs.test-source-branch.outputs.percentage }}%)"
 
           if [[ "${{ needs.test-source-branch.outputs.total }}" == "0" ]]; then
             echo "::error::No tests were found in the PR branch"
@@ -1116,23 +1035,82 @@ jobs:
             fi
           fi
 
-          # Fail if any tests passed in target branch but now fail in PR branch
-          if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]]; then
-            echo "❌ PR branch has test regressions from target branch"
+          # Check for regressions from meta-regression-analysis OR our comprehensive analysis
+          COMPREHENSIVE_REGRESSIONS="false"
+          if [ -f comprehensive_regression_report.txt ]; then
+            # Check if there are any actual regressions in our comprehensive report
+            if grep -q "REGRESSIONS.*([1-9]" comprehensive_regression_report.txt; then
+              COMPREHENSIVE_REGRESSIONS="true"
+            fi
+          fi
+
+          if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]] || [[ "$COMPREHENSIVE_REGRESSIONS" == "true" ]]; then
+            echo "❌ Test regressions detected from target branch"
             REGRESSION_COUNT_VAL=${{ needs.perform-regression-analysis.outputs.regression_count }}
-            echo "  - $REGRESSION_COUNT_VAL tests that were passing in target branch are now failing"
 
             echo "### :x: Test Regressions Detected!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**$REGRESSION_COUNT_VAL test(s) that were passing in the target branch are now failing in the PR branch.**" >> $GITHUB_STEP_SUMMARY
-            echo "This job (\`compare-results\`) has been marked as failed due to these regressions." >> $GITHUB_STEP_SUMMARY
-
-            if [ -f regression_details.txt ]; then # Check if file exists (it should from previous step)
-                echo "Failing tests (regressions) list:"
-                cat regression_details.txt
+            
+            # Extract counts from comprehensive report if available
+            if [ -f comprehensive_regression_report.txt ]; then
+              PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              
+              TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + PASS_GONE_COUNT + FAIL_GONE_COUNT + DISCOVERY_COUNT))
+              
+              echo "**$TOTAL_REGRESSIONS total regression(s) detected across multiple categories:**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
+              echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+              echo "| Pass → Fail | $PASS_FAIL_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Pass → Skip/XFail | $PASS_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Fail → Skip | $FAIL_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Pass → Gone | $PASS_GONE_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Fail → Gone | $FAIL_GONE_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Discovery Warnings | $DISCOVERY_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
             else
-                echo "::warning::Regression details file (regression_details.txt) not found in Compare test results step. It might be available as an artifact from the 'perform-regression-analysis' job."
+              echo "**$REGRESSION_COUNT_VAL test regression(s) detected.** See detailed breakdown below:" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
             fi
+
+            # Display comprehensive regression report if available
+            if [ -f comprehensive_regression_report.txt ]; then
+                echo "📋 **Comprehensive Regression Analysis:**" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Parse and format the comprehensive report for better GitHub display
+                while IFS= read -r line; do
+                    if [[ "$line" =~ ^[A-Z-].*REGRESSIONS.*\([0-9]+ ]]; then
+                        echo "### $line" >> $GITHUB_STEP_SUMMARY
+                    elif [[ "$line" =~ ^Previously ]]; then
+                        echo "*$line*" >> $GITHUB_STEP_SUMMARY
+                        echo "" >> $GITHUB_STEP_SUMMARY
+                    elif [[ "$line" =~ ^[[:space:]]*[0-9]+\. ]]; then
+                        echo "- ${line#*. }" >> $GITHUB_STEP_SUMMARY
+                    elif [[ ! "$line" =~ ^=.*=$ ]] && [[ -n "$line" ]]; then
+                        echo "$line" >> $GITHUB_STEP_SUMMARY
+                    fi
+                done < comprehensive_regression_report.txt
+                
+                echo "" >> $GITHUB_STEP_SUMMARY
+            elif [ -f regression_details.txt ]; then
+                echo "### Pass-to-Fail Regressions" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                grep "^[0-9]\+\." regression_details.txt | while read -r line; do
+                    echo "- ${line#*. }" >> $GITHUB_STEP_SUMMARY
+                done
+                echo "" >> $GITHUB_STEP_SUMMARY
+            else
+                echo "::warning::Regression details files not found."
+            fi
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "This job (\`compare-results\`) has been marked as failed due to these regressions." >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
@@ -1178,15 +1156,6 @@ jobs:
             exit 1
           fi
 
-      - name: Upload comparison analysis logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: comparison_analysis_logs_${{ github.event.pull_request.number || github.run_id }}
-          path: debug_*_analysis.log
-          retention-days: 3
-          if-no-files-found: ignore
-
   perform-regression-analysis:
     needs: [test-source-branch, test-target-branch]
     uses: ./.github/workflows/meta-regression-analysis.yml
@@ -1195,17 +1164,14 @@ jobs:
       item_type_plural: "tests"
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
-      target_branch_artifact_name: target_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
-      pr_branch_artifact_name: pr_branch_test_data_${{ github.event.pull_request.number || github.run_id }}
-    # Secrets are not needed for this reusable workflow currently
-    # secrets: inherit
+      target_branch_artifact_name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      pr_branch_artifact_name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
 
   # Conditionally run notification job only if needed
   prepare-notification:
     name: Prepare Notification Data
     needs:
       [
-        lint,
         test-source-branch,
         test-target-branch,
         compare-results,
@@ -1236,18 +1202,36 @@ jobs:
             echo "::notice::DISCORD_WEBHOOK_URL secret is not set. Discord notifications will likely be skipped by the alert workflow if it relies on this secret."
             echo "webhook_available=false" >> $GITHUB_OUTPUT
           else
-            echo "::debug::DISCORD_WEBHOOK_URL secret is present."
             echo "webhook_available=true" >> $GITHUB_OUTPUT
           fi
       - name: Download regression details (if any)
         id: download_regressions
-        if: needs.perform-regression-analysis.outputs.has_regressions == 'true' && needs.perform-regression-analysis.outputs.regression_count > 0
+        if: always()
         uses: actions/download-artifact@v4
         with:
-          # The artifact name from reusable-regression-analyzer.yml
           name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
           path: . # Download to current directory
         continue-on-error: true
+
+      - name: Check downloaded regression file
+        if: always()
+        run: |
+          echo "Checking for regression details file..."
+          if [ -f "regression_details.txt" ]; then
+            echo "✅ Regression details file found"
+            echo "File size: $(wc -c < regression_details.txt) bytes"
+            echo "First few lines:"
+            head -5 regression_details.txt
+          else
+            echo "❌ Regression details file not found"
+          fi
+
+          if [ -f "comprehensive_regression_report.txt" ]; then
+            echo "✅ Comprehensive regression report found"
+            echo "File size: $(wc -c < comprehensive_regression_report.txt) bytes"
+          else
+            echo "❌ Comprehensive regression report not found"
+          fi
 
       - name: Construct Discord Notification
         id: construct_notification
@@ -1426,8 +1410,8 @@ jobs:
           if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
             MESSAGE_LINES+=("**:red_circle: ERROR: Test Discovery Failed in PR Branch (\`${PR_BRANCH}\`)**")
             MESSAGE_LINES+=("  - Type: \`${PR_ERROR_TYPE}\`")
-            MESSAGE_LINES+=("  - Details: \`\`\`${PR_ERROR_DETAILS_TRUNCATED}\`\`\`")
             MESSAGE_LINES+=("  - This usually indicates import errors or syntax issues preventing tests from being collected.")
+            MESSAGE_LINES+=("  - See attached file for detailed error information.")
           elif [[ "$PR_NO_TESTS_FOUND" == "true" ]]; then
             MESSAGE_LINES+=("**:warning: WARNING: No Tests Found in PR Branch (\`${PR_BRANCH}\`)**")
             MESSAGE_LINES+=("  - Pytest did not discover any test files matching its patterns.")
@@ -1437,38 +1421,90 @@ jobs:
           # Regression Analysis Summary
           if [[ "$HAS_REGRESSIONS" == "true" ]]; then
             MESSAGE_LINES+=("**:red_circle: REGRESSIONS DETECTED**")
-            MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
             
-            # Calculate current message length
-            CURRENT_MESSAGE=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
-            CURRENT_LENGTH=${#CURRENT_MESSAGE}
-            
-            if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
-              # Read regression details
-              REGRESSION_LIST=$(awk '/^[0-9]+\./ {sub(/^[0-9]+\. /, "- "); print}' "$REGRESSION_FILE_PATH")
+            # Check if we have comprehensive regression file with categories
+            if [ -f "comprehensive_regression_report.txt" ]; then
+              # Extract counts from comprehensive report
+              PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               
-              # Calculate length with regression details
-              TEMP_MESSAGE="$CURRENT_MESSAGE"
-              TEMP_MESSAGE+="\`\`\`"
-              TEMP_MESSAGE+="$REGRESSION_LIST"
-              TEMP_MESSAGE+="\`\`\`"
-              TEMP_LENGTH=${#TEMP_MESSAGE}
+                             # Add category summaries (≤5 show paths, >5 show count + refer to file)
+               if [[ "$PASS_FAIL_COUNT" -gt 0 ]]; then
+                 if [[ "$PASS_FAIL_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Pass→Fail ($PASS_FAIL_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-FAIL REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_FAIL_COUNT | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("• \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Pass→Fail:** $PASS_FAIL_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$PASS_SKIP_COUNT" -gt 0 ]]; then
+                 if [[ "$PASS_SKIP_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Pass→Skip ($PASS_SKIP_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_SKIP_COUNT | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("• \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Pass→Skip:** $PASS_SKIP_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$FAIL_SKIP_COUNT" -gt 0 ]]; then
+                 if [[ "$FAIL_SKIP_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Fail→Skip ($FAIL_SKIP_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_COUNT | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("• \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Fail→Skip:** $FAIL_SKIP_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$PASS_GONE_COUNT" -gt 0 ]]; then
+                 if [[ "$PASS_GONE_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Pass→Gone ($PASS_GONE_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_GONE_COUNT | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("• \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Pass→Gone:** $PASS_GONE_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$FAIL_GONE_COUNT" -gt 0 ]]; then
+                 if [[ "$FAIL_GONE_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Fail→Gone ($FAIL_GONE_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_GONE_COUNT | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("• \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Fail→Gone:** $FAIL_GONE_COUNT tests (see attached file)")
+                 fi
+               fi
               
-              if [ $TEMP_LENGTH -le 2000 ]; then
-                # If total length would be under 2000 chars, include in message
-                MESSAGE_LINES+=("  - **Failed Tests (Regressions):**")
-                MESSAGE_LINES+=("\`\`\`")
-                MESSAGE_LINES+=("$REGRESSION_LIST")
-                MESSAGE_LINES+=("\`\`\`")
-                ARTIFACT_PATH_OUTPUT="" # No artifact if details are inline
-              else
-                # If would exceed 2000 chars, attach file instead
-                MESSAGE_LINES+=("  - Details for the ${REGRESSION_COUNT} regressions are in the attached \`regression_details.txt\` file.")
-                ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+              if [[ "$DISCOVERY_COUNT" -gt 0 ]]; then
+                if [[ "$DISCOVERY_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=("**Discovery Warnings ($DISCOVERY_COUNT):**")
+                  MESSAGE_LINES+=("• $DISCOVERY_COUNT new warnings (see attached file)")
+                else
+                  MESSAGE_LINES+=("**Discovery Warnings:** $DISCOVERY_COUNT warnings (see attached file)")
+                fi
               fi
+              
             else
-              MESSAGE_LINES+=("  (Regression details file not found or download failed; cannot list specific regressions here.)")
-              ARTIFACT_PATH_OUTPUT=""
+              # Fallback to simple regression count
+              MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
             fi
           elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
             # This case handles general comparison failures NOT due to specific regressions
@@ -1485,6 +1521,15 @@ jobs:
           MESSAGE_LINES+=("---")
           MESSAGE_LINES+=("[View Workflow Run](${ACTION_RUN_URL})")
 
+          # Set artifact path - always prefer comprehensive report if it exists
+          if [ -f "comprehensive_regression_report.txt" ]; then
+            ARTIFACT_PATH_OUTPUT="comprehensive_regression_report.txt"
+          elif [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+            ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+          else
+            ARTIFACT_PATH_OUTPUT=""
+          fi
+
           # Construct with actual newlines
           FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
           if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
@@ -1500,17 +1545,6 @@ jobs:
 
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
 
-      - name: Upload notification construction debug logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: notification_debug_logs_${{ github.event.pull_request.number || github.run_id }}
-          path: debug_notification_construction.log
-          retention-days: 3
-          if-no-files-found: ignore
-
-  # Even if webhook checks are handled inside the alert workflow,
-  # we still need to pass the secret to satisfy GitHub's workflow validation
   notify-discord:
     name: Send Discord Notification
     needs: [prepare-notification]
