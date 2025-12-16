@@ -104,10 +104,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          set -x
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
-          if [ -f requirements.txt ]; then 
+          PYPROJECT=$(find . -name "pyproject.toml" -type f | head -n 1)
+          if [ -n "$PYPROJECT" ]; then
+            pip install -e "$(dirname "$PYPROJECT")[dev]"
+          elif [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
 
